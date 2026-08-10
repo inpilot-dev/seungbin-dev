@@ -1,0 +1,141 @@
+---
+title: "잔고가 마이너스로 내려갔다 — 낙관적 락과 비관적 락"
+description: "읽고-계산하고-쓰기 사이에 다른 트랜잭션이 들어온다. version 컬럼과 SELECT FOR UPDATE 중 뭘 언제 쓰는지."
+date: "2026-03-19"
+category: "Build"
+tags: ["동시성", "트랜잭션", "데이터베이스", "백엔드"]
+---
+
+## 잔고 검사는 트랜잭션 안에 있어도 안전하지 않다
+
+```python
+with db.transaction():
+    balance = db.query("SELECT balance FROM accounts WHERE id = %s", aid)
+    if balance < amount:
+        raise InsufficientFunds()
+    db.execute("UPDATE accounts SET balance = balance - %s WHERE id = %s", amount, aid)
+```
+
+트랜잭션으로 감쌌으니 됐다고 생각하기 쉽다. 아니다.
+기본 격리 수준(대부분 `READ COMMITTED`)에서는 두 요청이 이렇게 겹친다.
+
+```
+T1: SELECT balance → 10000
+T2: SELECT balance → 10000     ← T1이 아직 UPDATE 안 함
+T1: 10000 >= 8000 통과 → UPDATE → 2000
+T2: 10000 >= 8000 통과 → UPDATE → -6000
+```
+
+**읽은 값으로 판단하고 쓰는 사이**에 창이 있다. 이게 lost update다.
+재고, 쿠폰 수량, 포인트 차감에서 똑같이 난다.
+
+## 방법 0: 애초에 읽지 않는다
+
+제일 싸고 제일 확실한 방법이 이거다. 조건을 SQL로 밀어 넣는다.
+
+```sql
+UPDATE accounts SET balance = balance - $1
+WHERE id = $2 AND balance >= $1;
+```
+
+영향받은 행 수가 0이면 잔고 부족이다. 락도, 재시도도, version 컬럼도 필요 없다.
+DB가 행 단위 락을 알아서 잡고 원자적으로 처리한다.
+
+```python
+n = db.execute(sql, amount, aid).rowcount
+if n == 0:
+    raise InsufficientFunds()
+```
+
+여기에 `CHECK (balance >= 0)` 제약까지 걸어두면 어떤 경로로 들어와도 못 뚫는다.
+**단일 행, 단순 산술이면 여기서 끝난다.** 아래 두 방법은 이게 안 될 때 쓴다.
+
+## 낙관적 락: 충돌이 드물 때
+
+버전 컬럼을 두고, 내가 읽은 버전이 그대로일 때만 쓴다.
+
+```sql
+UPDATE accounts SET balance = $1, version = version + 1
+WHERE id = $2 AND version = $3;   -- $3 = 읽을 때의 version
+```
+
+행 수가 0이면 누군가 먼저 고친 것이다. **다시 읽고 다시 시도**한다.
+
+```python
+for attempt in range(3):
+    row = read(aid)
+    new = compute(row)                     # 복잡한 계산이 여기 들어갈 수 있다
+    if write_if_version(aid, new, row.version):
+        break
+else:
+    raise TooManyConflicts()
+```
+
+장점은 락을 안 잡으니 대기가 없다는 것. 단점은 충돌이 잦으면
+재시도가 늘어 오히려 느려진다. **경합이 낮은 곳** 전용이다.
+
+재시도 횟수를 무한으로 두지 않는다. 인기 상품 하나에 요청이 몰리면
+전부 재시도 루프에 갇혀서 서버가 죽는다.
+
+## 비관적 락: 충돌이 잦거나 계산이 복잡할 때
+
+읽을 때부터 행을 잠근다.
+
+```sql
+BEGIN;
+SELECT balance FROM accounts WHERE id = $1 FOR UPDATE;
+-- 여기서 다른 트랜잭션은 대기한다
+UPDATE accounts SET balance = ... WHERE id = $1;
+COMMIT;
+```
+
+확실하지만 대기가 생긴다. 그래서 규칙이 둘 붙는다.
+
+**하나, 락 잡은 트랜잭션 안에서 외부 호출을 하지 않는다.**
+
+```python
+with db.transaction():
+    row = db.query("SELECT ... FOR UPDATE", aid)
+    pg.charge(...)          # 여기서 PG가 3초 걸리면 그동안 행이 잠겨 있다
+    db.execute("UPDATE ...")
+```
+
+외부 API가 느려지는 순간 락 대기가 쌓이고 커넥션 풀이 마른다.
+외부 호출은 트랜잭션 **밖**으로 뺀다.
+
+**둘, 여러 행을 잠글 땐 순서를 고정한다.**
+
+```python
+for aid in sorted([from_id, to_id]):        # 정렬이 데드락을 막는다
+    db.query("SELECT ... FOR UPDATE", aid)
+```
+
+A→B 이체와 B→A 이체가 동시에 들어오면, 순서가 다를 때 서로를 기다리며
+데드락이 난다. **id 정렬**만으로 사라진다.
+
+## 고르는 기준
+
+| 상황 | 선택 |
+| --- | --- |
+| 단일 행 + 단순 증감 | 조건부 UPDATE (방법 0) |
+| 충돌 드물고 계산이 앱에 있음 | 낙관적 락 |
+| 충돌 잦음 / 여러 행을 함께 봐야 함 | `FOR UPDATE` |
+| 재고 0에 몰리는 선착순 | 비관적 락 + 큐잉 검토 |
+
+## 검증
+
+```python
+def test_no_oversell():
+    seed_balance("A", 10000)
+    with ThreadPoolExecutor(20) as ex:
+        results = list(ex.map(lambda _: try_withdraw("A", 8000), range(20)))
+    assert sum(results) == 1                 # 딱 한 건만 성공
+    assert get_balance("A") == 2000
+```
+
+동시성 버그는 단위 테스트로 안 잡힌다. **스레드를 실제로 띄워서**
+같은 행을 치게 만들어야 재현된다. 순차 테스트는 항상 통과한다.
+
+## 한 줄 요약
+
+> 되면 조건부 UPDATE 한 방, 충돌 드물면 version, 잦으면 `FOR UPDATE` + id 정렬. 락 안에서 외부 호출 금지.

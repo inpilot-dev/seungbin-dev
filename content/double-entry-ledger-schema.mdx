@@ -1,0 +1,125 @@
+---
+title: "잔액 컬럼을 UPDATE하지 않는다 — 복식부기 원장 스키마"
+description: "balance를 직접 갱신하면 왜 언젠가 안 맞는지, 그리고 append-only 원장으로 어떻게 바꾸는지."
+date: "2026-08-08"
+category: "Build"
+tags: ["원장", "정산", "DB스키마", "핀테크"]
+---
+
+## 처음엔 다 이렇게 짠다
+
+```sql
+UPDATE accounts SET balance = balance - 5000 WHERE id = 'A';
+UPDATE accounts SET balance = balance + 5000 WHERE id = 'B';
+```
+
+트랜잭션으로 묶었으니 원자적이고, 잔액 조회는 컬럼 하나 읽으면 끝이다.
+동작한다. 문제는 **틀렸을 때 알 방법이 없다는 것**이다.
+
+잔액이 이상하다는 문의가 들어오면 물어야 할 게 세 가지다.
+언제부터 틀렸나, 어떤 거래 때문인가, 원래 값은 얼마인가.
+`balance` 컬럼은 셋 다 답을 못 한다. 과거를 덮어썼기 때문이다.
+
+## 원장은 append-only다
+
+돈의 움직임을 **행으로 쌓고, 잔액은 합계로 계산**한다.
+
+```sql
+CREATE TABLE entries (
+  id            BIGSERIAL   PRIMARY KEY,
+  tx_id         UUID        NOT NULL,      -- 한 거래를 묶는 키
+  account_id    TEXT        NOT NULL,
+  amount_minor  BIGINT      NOT NULL,      -- 부호 있음. 양수=입금, 음수=출금
+  currency      CHAR(3)     NOT NULL,
+  created_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+A가 B에게 5,000원을 보내면 **두 행**이 들어간다.
+
+| tx_id | account_id | amount_minor |
+| --- | --- | --- |
+| `tx_1` | A | `-5000` |
+| `tx_1` | B | `+5000` |
+
+이게 복식부기다. 한 거래의 행들을 합하면 **항상 0**이 된다.
+이 성질 덕분에 전체 원장을 검증할 수 있다.
+
+```sql
+-- 하나라도 나오면 원장이 깨진 것
+SELECT tx_id, SUM(amount_minor) FROM entries
+GROUP BY tx_id HAVING SUM(amount_minor) <> 0;
+```
+
+`balance` 방식에는 이런 질의가 없다. 깨져도 조용하다.
+
+## 돈이 밖에서 들어오면
+
+"합이 0"을 지키려면 외부 입금도 상대편이 있어야 한다.
+카드사에서 1만원이 들어왔다면:
+
+| tx_id | account_id | amount_minor |
+| --- | --- | --- |
+| `tx_2` | `external:card` | `-10000` |
+| `tx_2` | A | `+10000` |
+
+`external:card` 계정의 잔액은 음수로 계속 커진다. 정상이다.
+그 값이 곧 **"카드사로부터 들어온 누적 금액"** 이라서 PG 정산서와 대사할 수 있다.
+
+## 취소는 삭제가 아니라 역분개
+
+```sql
+DELETE FROM entries WHERE tx_id = 'tx_1';   -- 하지 않는다
+```
+
+취소도 새 행으로 쌓는다. 부호만 뒤집는다.
+
+```
+tx_3 | A | +5000   (tx_1 취소)
+tx_3 | B | -5000
+```
+
+이러면 "취소된 적이 있다"는 사실이 원장에 남는다. 삭제하면 그 사실도 같이 사라진다.
+분쟁이 붙었을 때 남아있어야 하는 건 최종 잔액이 아니라 **경위**다.
+
+## "그럼 조회할 때마다 다 더하나"
+
+그게 유일한 단점이다. 거래가 쌓이면 `SUM`이 느려진다.
+그런데 해결책은 `balance` 컬럼으로 돌아가는 게 아니라 **캐시를 두는 것**이다.
+
+```sql
+CREATE TABLE balance_snapshots (
+  account_id   TEXT PRIMARY KEY,
+  amount_minor BIGINT NOT NULL,
+  last_entry_id BIGINT NOT NULL   -- 어디까지 반영했는지
+);
+```
+
+조회는 `스냅샷 + 그 이후 행들의 합`이다.
+차이가 결정적이다. 스냅샷이 틀려도 **원장에서 다시 계산해 복구할 수 있다.**
+`balance` 컬럼은 틀리면 복구할 원본이 없다.
+
+```python
+def balance(account_id: str) -> int:
+    snap = get_snapshot(account_id)          # 없으면 (0, 0)
+    return snap.amount + sum_entries_after(account_id, snap.last_entry_id)
+
+# 스냅샷을 통째로 날려도 같은 값이 나와야 한다
+def test_snapshot_is_disposable():
+    before = balance("A")
+    drop_snapshots()
+    assert balance("A") == before
+```
+
+이 테스트가 통과하면 스냅샷은 순수한 캐시다. 통과 안 하면 그건 캐시가 아니라
+두 번째 진실이고, 두 진실은 언젠가 갈라진다.
+
+## 안 한 것
+
+계정과목(차변/대변 분류), 다통화 환산, 미결제 상태(pending/settled) 분리는 뺐다.
+개인 프로젝트에서 저 셋 없이도 정합성은 잡힌다.
+필요해지는 시점은 명확하다 — **외부 정산서와 대사를 시작할 때**다.
+
+## 한 줄 요약
+
+> 행은 쌓기만 하고, 한 거래의 합은 0, 잔액은 언제든 재계산 가능한 캐시로 둔다.

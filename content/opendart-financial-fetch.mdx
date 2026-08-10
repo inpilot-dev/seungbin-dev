@@ -1,0 +1,131 @@
+---
+title: "OpenDART로 재무제표 긁기 — 회사 이름으로는 못 부른다"
+description: "종목명을 넣으면 안 된다. corp_code 30MB zip부터 받아야 한다. 실제로 막혔던 지점과 파라미터 정리."
+date: "2026-08-05"
+category: "Automate"
+tags: ["DART", "공공API", "핀테크", "데이터수집"]
+---
+
+## 첫 벽: 회사 이름 파라미터가 없다
+
+금융감독원 전자공시(DART)는 OpenAPI를 무료로 연다. 키만 발급받으면 된다.
+그런데 문서를 보고 `corp_name=삼성전자`로 부르면 아무것도 안 나온다.
+**공식 파라미터 표에 `corp_name`이 없기 때문이다.**
+
+모든 조회는 `corp_code`라는 8자리 고유번호로만 된다.
+그리고 이 매핑표는 API가 아니라 **zip 파일로 통째로** 받아야 한다.
+
+## corp_code 확보
+
+```bash
+curl -fsS -o corp.zip \
+  "https://opendart.fss.or.kr/api/corpCode.xml?crtfc_key=$API_K_DART"
+unzip -o corp.zip -d ./dart_corp
+```
+
+압축 풀면 `CORPCODE.xml` 하나가 나온다. 약 30MB, 상장·비상장 전체 법인이 들어있다.
+구조는 단순하다.
+
+```xml
+<list>
+  <corp_code>00126380</corp_code>
+  <corp_name>삼성전자</corp_name>
+  <stock_code>005930</stock_code>
+  <modify_date>20250701</modify_date>
+</list>
+```
+
+`stock_code`가 빈 항목이 비상장이다. 상장사만 필요하면 여기서 거른다.
+
+```python
+import xml.etree.ElementTree as ET
+
+tree = ET.parse("dart_corp/CORPCODE.xml")
+listed = {
+    e.findtext("stock_code"): e.findtext("corp_code")
+    for e in tree.iter("list")
+    if (e.findtext("stock_code") or "").strip()
+}
+assert listed["005930"] == "00126380"
+```
+
+**매번 다시 받지 않는다.** 로컬에 캐시하고, 신규 상장 반영이 필요할 때만
+갱신한다. 30MB를 스크립트 돌릴 때마다 받으면 호출 한도만 먹는다.
+
+## 재무제표 호출
+
+```bash
+curl -fsS --get 'https://opendart.fss.or.kr/api/fnlttSinglAcntAll.json' \
+  --data-urlencode "crtfc_key=$API_K_DART" \
+  --data-urlencode 'corp_code=00126380' \
+  --data-urlencode 'bsns_year=2025' \
+  --data-urlencode 'reprt_code=11011' \
+  --data-urlencode 'fs_div=CFS'
+```
+
+헷갈리는 두 파라미터를 표로 박아둔다.
+
+| `reprt_code` | 보고서 |
+| --- | --- |
+| `11013` | 1분기 |
+| `11012` | 반기 |
+| `11014` | 3분기 |
+| `11011` | 사업보고서(연간) |
+
+| `fs_div` | 재무제표 |
+| --- | --- |
+| `CFS` | 연결 |
+| `OFS` | 개별(별도) |
+
+종목 비교 지표를 만들 거면 `CFS`로 통일한다. 섞으면 자회사가 큰 회사에서
+숫자가 완전히 달라진다. 다만 연결재무제표를 안 만드는 회사는 `CFS`가 비니까
+`CFS` 실패 시 `OFS`로 폴백하는 분기를 넣어둔다.
+
+## HTTP 200인데 실패다
+
+이게 제일 짜증났던 부분이다. DART는 에러를 HTTP 상태코드가 아니라
+**본문의 `status` 필드**로 준다. `requests`의 `raise_for_status()`는 통과한다.
+
+```python
+r = requests.get(url, params=params, timeout=10)
+r.raise_for_status()          # 여기선 안 걸림
+data = r.json()
+if data["status"] != "000":   # 이 체크가 진짜 검증
+    raise DartError(data["status"], data["message"])
+```
+
+자주 보는 코드:
+
+| status | 의미 |
+| --- | --- |
+| `000` | 정상 |
+| `013` | 조회 결과 없음 (에러 아님. 그 해 보고서가 없을 뿐) |
+| `020` | 요청 제한 초과 |
+| `100` | 필수 파라미터 누락 |
+
+`013`을 예외로 던지면 전 종목 루프가 중간에 죽는다. **없는 건 정상**으로
+취급하고 `None`을 반환한 뒤 다음 종목으로 넘어가게 짰다.
+
+## 호출 한도
+
+공식 가이드는 일반적으로 일 20,000건 초과 시 `020`이 난다고만 적어놨다.
+키별로 다른 한도가 걸려 있으면 다른 지점에서도 뜬다. 즉 **정확한 임계치를
+가정하고 짜면 안 된다.** `020`이 오면 그날은 멈추고 다음 날 이어받는 구조로 만든다.
+
+상장사 약 2,500개 × 4개 분기면 1만 건이다. 한 번에 다 긁으려 하지 말고
+수집 상태를 테이블에 남겨서 이어받게 한다.
+
+```sql
+CREATE TABLE fetch_log (
+  corp_code CHAR(8), bsns_year INT, reprt_code CHAR(5),
+  status TEXT, fetched_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (corp_code, bsns_year, reprt_code)
+);
+```
+
+재실행하면 이미 성공한 조합은 건너뛴다. 이거 없이 돌렸다가
+한도 걸리고 처음부터 다시 하느라 하루 날렸다.
+
+## 한 줄 요약
+
+> corp_code zip은 캐시, `status` 필드로 검증, 수집 진행상황은 DB에 남겨 이어받기.
