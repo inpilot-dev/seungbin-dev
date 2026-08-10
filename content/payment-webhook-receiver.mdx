@@ -1,0 +1,155 @@
+---
+title: "결제 웹훅은 순서대로 오지 않는다"
+description: "서명 검증, 재전송, 역순 도착. 웹훅 수신 엔드포인트에서 실제로 처리해야 하는 것들."
+date: "2026-06-14"
+category: "Build"
+tags: ["웹훅", "결제", "보안", "백엔드"]
+---
+
+## 웹훅은 신뢰할 수 없는 입력이다
+
+URL만 알면 누구나 POST할 수 있다. 그래서 첫 번째 규칙은 이거다.
+**본문에 적힌 내용을 믿지 않는다.**
+
+```python
+@app.post("/webhooks/pg")
+def receive(body: dict):
+    order = get_order(body["order_id"])
+    order.mark_paid(body["amount"])       # 위조 요청이면 공짜 결제
+```
+
+`{"order_id": "...", "status": "paid"}`를 아무나 보내면 그대로 통과한다.
+
+## 서명 검증
+
+PG사는 보통 요청에 서명 헤더를 붙인다. **원문 바이트**로 HMAC을 계산해서 비교한다.
+
+```python
+def verify(raw: bytes, sig: str, secret: str) -> bool:
+    mac = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(mac, sig)     # == 아니다
+```
+
+두 가지가 자주 틀린다.
+
+**하나, 파싱된 dict를 다시 직렬화하면 안 된다.** 키 순서나 공백이
+원본과 달라져 서명이 안 맞는다. 프레임워크에서 raw body를 꺼내 쓴다.
+
+**둘, `==` 대신 `compare_digest`.** 문자열 비교는 첫 불일치에서 멈춰서
+비교 시간으로 정답을 한 글자씩 추측할 수 있다. 타이밍 공격이 실전에서
+얼마나 현실적인지와 별개로, 한 줄 바꾸면 없어지는 위험은 그냥 없앤다.
+
+서명 방식이 없는 곳이면 **콜백을 신호로만 쓰고 금액·상태는 조회 API로 다시 확인**한다.
+
+```python
+fact = pg.get_payment(body["payment_id"])   # 진실은 PG 서버에 있다
+if fact.amount != order.amount_minor:
+    raise AmountMismatch()
+```
+
+금액 검증은 서명이 있어도 한다. 서명은 "PG가 보냈다"만 보장하지
+"내 주문 금액과 같다"는 보장하지 않는다.
+
+## 같은 이벤트가 여러 번 온다
+
+PG는 응답이 늦거나 실패하면 재전송한다. 정상 동작이다.
+그래서 **수신 측이 멱등해야 한다.**
+
+```sql
+CREATE TABLE webhook_events (
+  event_id    TEXT PRIMARY KEY,      -- PG가 주는 이벤트 고유 ID
+  received_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+```python
+try:
+    db.execute("INSERT INTO webhook_events (event_id) VALUES (%s)", eid)
+except UniqueViolation:
+    return 200, "already processed"     # 200을 준다. 재전송 멈추라고
+```
+
+여기서도 PK 충돌을 경합 차단에 쓴다. `SELECT` 후 `INSERT`로 짜면
+동시 도착한 재전송 두 개가 둘 다 통과한다.
+
+이벤트 ID를 안 주는 PG면 `(payment_id, status)` 조합으로 키를 만든다.
+
+## 순서가 보장되지 않는다
+
+이게 제일 골치 아프다. `payment.authorized`보다 `payment.captured`가
+먼저 도착할 수 있다. 네트워크 재시도 때문에 순서는 쉽게 뒤집힌다.
+
+순서를 가정한 코드는 이렇게 깨진다.
+
+```python
+if event == "captured":
+    assert order.status == "authorized"    # 아직 안 왔을 수 있다
+```
+
+두 가지로 방어한다.
+
+**하나, 이벤트에 실린 타임스탬프나 버전으로 오래된 건 버린다.**
+
+```python
+if event.occurred_at <= order.last_event_at:
+    return 200, "stale event"
+```
+
+**둘, 상태 전이를 조건부 UPDATE로 처리하고 실패를 정상으로 취급한다.**
+
+```sql
+UPDATE orders SET status = 'paid'
+WHERE id = $1 AND status IN ('created', 'authorized');
+```
+
+전이 불가면 행 수 0이 나오고, 그건 에러가 아니라
+"이미 더 진행된 상태"다. 로그만 남기고 200을 반환한다.
+
+## 응답은 빨리, 처리는 나중에
+
+무거운 작업(메일 발송, 정산 계산)을 웹훅 핸들러 안에서 하면
+PG 쪽 타임아웃에 걸려 **재전송이 폭증**한다.
+
+```python
+@app.post("/webhooks/pg")
+def receive(raw: bytes, sig: str):
+    if not verify(raw, sig, SECRET):
+        return 401
+    enqueue(raw)          # 저장만 하고
+    return 200            # 즉시 응답
+```
+
+수신과 처리를 분리한다. 검증과 저장까지만 동기로 하고 나머지는 큐로 넘긴다.
+
+## 상태 코드를 정확히 쓴다
+
+| 상황 | 응답 | 이유 |
+| --- | --- | --- |
+| 서명 불일치 | `401` | 재전송받을 이유 없음 |
+| 처리 완료 / 중복 | `200` | 재전송 중단 요청 |
+| 내 DB 장애 | `500` | **재전송받아야 함** |
+| 모르는 이벤트 타입 | `200` | 재전송받아도 어차피 모름 |
+
+여기서 실수하기 쉬운 게 세 번째다. 내 서버 문제일 때 `200`을 주면
+PG는 성공으로 알고 다시 안 보낸다. **그 결제는 영원히 유실된다.**
+"내 잘못이면 5xx"를 지켜야 재전송이라는 안전망이 작동한다.
+
+## 그래도 놓친다 — 대사 배치
+
+웹훅을 아무리 잘 짜도 유실은 생긴다. 하루 한 번 PG 거래 내역을 받아
+내 DB와 대조하는 배치를 둔다.
+
+```python
+def reconcile(day):
+    for pg_tx in pg.list_transactions(day):
+        local = get_payment(pg_tx.id)
+        if local is None or local.amount != pg_tx.amount:
+            alert("대사 불일치", pg_tx)
+```
+
+**웹훅은 빠른 경로, 배치는 정확한 경로**다. 둘 다 있어야 한다.
+웹훅만 믿으면 언젠가 "돈은 들어왔는데 주문은 미결제"인 건이 생긴다.
+
+## 한 줄 요약
+
+> raw 바이트로 서명 검증, event_id PK로 중복 차단, 순서는 가정하지 않고, 내 잘못이면 5xx, 마지막은 대사 배치.

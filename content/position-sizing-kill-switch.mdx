@@ -1,0 +1,155 @@
+---
+title: "수익 내는 로직보다 손실 막는 로직을 먼저 짰다 — 리스크 한도와 킬 스위치"
+description: "포지션 사이징, 일일 손실 한도, 주문 폭주 차단. 자동매매에서 코드 버그는 전략 오류보다 비싸다."
+date: "2026-06-30"
+category: "Build"
+tags: ["리스크관리", "자동매매", "퀀트", "안정성"]
+---
+
+## 최악은 전략이 틀리는 게 아니다
+
+전략이 틀리면 조금씩 잃는다. **코드가 틀리면 한 번에 잃는다.**
+부호를 반대로 쓰거나, 수량 계산에서 0이 하나 더 붙거나,
+루프가 주문을 계속 내거나. 이건 전부 백테스트에 안 나온다.
+
+그래서 전략 로직보다 리스크 레이어를 먼저 만들었다.
+전략은 "얼마나 벌까"를 정하고, 리스크 레이어는 **"최대 얼마까지 잃을 수 있나"** 를 정한다.
+
+## 포지션 사이징: 금액이 아니라 리스크로 정한다
+
+"한 종목에 100만원"은 나쁜 규칙이다. 변동성이 다른 두 종목에
+같은 금액을 넣으면 실제로 감수하는 위험이 다르다.
+
+**손절폭 기준**으로 계산한다.
+
+```python
+def size(equity: int, risk_pct: float, entry: int, stop: int) -> int:
+    """한 번의 손절로 자본의 risk_pct만 잃도록 수량을 정한다"""
+    risk_per_share = abs(entry - stop)
+    if risk_per_share == 0:
+        return 0
+    return int(equity * risk_pct / risk_per_share)
+```
+
+자본 1,000만원, 리스크 1%면 한 번 손절에 10만원을 잃는다.
+손절폭이 넓은 종목은 자동으로 수량이 줄어든다.
+
+여기에 **상한을 하나 더 씌운다.**
+
+```python
+qty = min(
+    size(equity, 0.01, entry, stop),
+    int(equity * 0.2 / entry),           # 한 종목 최대 20%
+    int(adv * 0.01 / entry),             # 일 거래대금 1% 이하
+)
+```
+
+변동성이 극단적으로 낮은 종목에서 첫 공식이 터무니없이 큰 수량을 내놓는다.
+공식 하나를 믿지 않고 상한을 겹쳐 씌우는 게 안전하다.
+
+## 손실 한도는 계층으로 둔다
+
+| 층 | 한도 | 걸리면 |
+| --- | --- | --- |
+| 종목 | 진입가 대비 손절선 | 해당 포지션 청산 |
+| 일간 | 자본의 -2% | 그날 신규 진입 중단 |
+| 누적 | 고점 대비 -10% | 전체 중단, 수동 확인 |
+
+일간 한도가 실전에서 제일 자주 작동했다.
+"오늘 안 좋은 날"에 계속 진입해서 손실을 키우는 패턴을 끊어준다.
+
+```python
+def can_open(self) -> bool:
+    if self.daily_pnl <= -self.equity_at_open * 0.02:
+        log.warning("일일 손실 한도. 신규 진입 중단")
+        return False
+    if self.drawdown_from_peak() >= 0.10:
+        self.halt("누적 손실 한도")
+        return False
+    return True
+```
+
+중요한 건 **한도에 걸려도 청산은 계속 가능해야 한다**는 것이다.
+"모든 주문 차단"으로 짜면 손실 난 포지션을 못 팔고 들고 있게 된다.
+막는 건 **신규 진입**이지 청산이 아니다.
+
+## 코드 버그를 잡는 한도
+
+전략과 무관하게, **비정상적인 행동 자체**를 막는 층이 필요하다.
+
+```python
+class Guard:
+    MAX_ORDERS_PER_MIN = 10
+    MAX_ORDER_VALUE = 5_000_000
+    MAX_POSITIONS = 10
+
+    def check(self, order):
+        if self.orders_last_minute() >= self.MAX_ORDERS_PER_MIN:
+            raise Halt("주문 폭주 감지")           # 루프 버그
+        if order.value > self.MAX_ORDER_VALUE:
+            raise Halt(f"주문 금액 초과: {order.value}")   # 수량 계산 버그
+        if len(self.positions) >= self.MAX_POSITIONS:
+            raise Halt("포지션 개수 초과")
+```
+
+이 값들은 **전략이 정상일 때 절대 안 닿는 수준**으로 잡는다.
+닿았다는 건 전략이 공격적인 게 아니라 코드가 고장났다는 뜻이다.
+그래서 여기 걸리면 경고가 아니라 **정지**다.
+
+주문 폭주 한도가 실제로 나를 살렸다. 신호 생성 루프에서
+같은 신호가 매 틱마다 재발생하는 버그가 있었는데,
+이 가드가 11번째 주문에서 봇을 멈춰 세웠다.
+
+## 킬 스위치는 밖에서도 눌려야 한다
+
+봇 프로세스 안에만 있으면, 봇이 이상해졌을 때 못 누른다.
+**외부 신호**로 멈출 수 있어야 한다.
+
+```python
+def should_halt() -> bool:
+    return redis.get("bot:halt") == "1" or Path("HALT").exists()
+```
+
+매 루프 시작에서 확인한다. 파일 하나 만들거나 Redis 키 하나 세팅하면
+멈춘다. 배포나 재시작 없이 즉시 멈출 수 있는 게 핵심이다.
+
+그리고 **정지는 자동 해제되지 않게** 한다. 원인을 확인한 사람이
+손으로 풀어야 한다. 자동 재개를 넣으면 원인 그대로인 채 다시 돈다.
+
+## 청산은 진입보다 관대하게
+
+```python
+def submit(self, order):
+    if order.is_reducing:            # 포지션을 줄이는 주문
+        return self._send(order)     # 한도 검사 최소화
+    self.guard.check(order)
+    if not self.can_open():
+        return
+    return self._send(order)
+```
+
+리스크 레이어가 청산까지 막으면 리스크 레이어가 리스크가 된다.
+줄이는 방향은 항상 통과시킨다.
+
+## 검증
+
+```python
+def test_daily_limit_blocks_entry_not_exit():
+    bot.daily_pnl = -bot.equity * 0.03      # 한도 초과 상태
+    assert bot.submit(buy_order) is None     # 진입은 막히고
+    assert bot.submit(sell_to_close) is not None   # 청산은 나간다
+
+def test_runaway_loop_halted():
+    for _ in range(20):
+        try: bot.submit(small_buy)
+        except Halt: break
+    else:
+        pytest.fail("주문 폭주가 안 막혔다")
+```
+
+두 번째 테스트가 실제 사고를 그대로 재현한 것이다.
+사고 한 번당 테스트 하나씩 늘려가는 게 리스크 레이어를 만드는 방법이었다.
+
+## 한 줄 요약
+
+> 사이징은 손절폭 기준 + 상한 여러 겹, 손실 한도는 종목/일간/누적 3층, 진입만 막고 청산은 열어둔다.

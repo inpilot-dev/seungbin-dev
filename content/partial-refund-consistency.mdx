@@ -1,0 +1,146 @@
+---
+title: "부분 환불을 세 번 하면 1원이 남는다"
+description: "환불 가능액 계산, 배송비 안분, 쿠폰 되돌리기. 부분 취소가 전액 취소보다 훨씬 어려운 이유."
+date: "2026-07-07"
+category: "Build"
+tags: ["환불", "정산", "결제", "백엔드"]
+---
+
+## 전액 환불은 쉽다
+
+원 결제 금액을 그대로 취소하면 끝이다. 문제는 부분 환불이다.
+3개 산 것 중 1개만 반품, 거기에 쿠폰과 배송비가 얽히면 금액이 안 맞기 시작한다.
+
+## 환불 가능액을 저장하지 않는다
+
+가장 흔한 설계 실수가 이거다.
+
+```sql
+refundable_amount BIGINT   -- 환불할 때마다 UPDATE
+```
+
+동시에 두 건의 환불 요청이 들어오면 둘 다 통과해서 **초과 환불**이 난다.
+그리고 값이 한 번 틀어지면 복구할 원본이 없다.
+
+환불도 원장의 행으로 쌓고, 가능액은 **계산해서 낸다.**
+
+```sql
+CREATE TABLE refunds (
+  id           UUID PRIMARY KEY,
+  payment_id   UUID   NOT NULL,
+  amount_minor BIGINT NOT NULL CHECK (amount_minor > 0),
+  status       TEXT   NOT NULL,     -- requested | done | failed
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+```
+
+```sql
+-- 환불 가능액 = 결제액 - (완료 + 진행중) 환불액
+SELECT p.amount_minor - COALESCE(SUM(r.amount_minor), 0)
+FROM payments p
+LEFT JOIN refunds r ON r.payment_id = p.id AND r.status IN ('requested','done')
+WHERE p.id = $1
+GROUP BY p.amount_minor;
+```
+
+`requested`를 합계에 포함하는 게 포인트다. 진행 중인 환불을 빼먹으면
+그게 완료되기 전에 또 환불이 승인된다.
+
+## 초과 환불은 DB가 막게 한다
+
+계산해도 동시성 창은 남는다. 애플리케이션 검사에 의존하지 않는다.
+
+```sql
+INSERT INTO refunds (id, payment_id, amount_minor, status)
+SELECT $1, $2, $3, 'requested'
+FROM payments p
+LEFT JOIN refunds r ON r.payment_id = p.id AND r.status IN ('requested','done')
+WHERE p.id = $2
+GROUP BY p.id, p.amount_minor
+HAVING p.amount_minor - COALESCE(SUM(r.amount_minor), 0) >= $3;
+```
+
+삽입된 행 수가 0이면 잔액 부족이다. **검사와 삽입이 한 문장**이라
+그 사이에 다른 트랜잭션이 끼어들 수 없다.
+
+## 쿠폰이 얽히면 비율로 나눈다
+
+3만원어치를 사고 3천원 쿠폰을 써서 2만7천원을 결제했다.
+1만원짜리 하나를 반품하면 얼마를 돌려주나.
+
+정가 1만원을 그대로 주면 **쿠폰 할인분을 사용자가 이득 본다.**
+남은 2만원 상품에 쿠폰 3천원이 전부 붙어 있는 셈이 되니까.
+
+할인은 상품 금액 비율로 안분한다.
+
+```python
+def refund_for(item, order):
+    ratio = item.price / order.items_total          # 10000 / 30000
+    discount_share = round(order.discount * ratio)  # 3000 * 1/3 = 1000
+    return item.price - discount_share              # 9000
+```
+
+여기서 반올림이 들어온다. 그래서 다음 문제가 생긴다.
+
+## 마지막 1원
+
+3만원에 쿠폰 1,000원, 상품 세 개가 각 1만원이면
+안분액이 333.33원씩이다. 반올림하면 333 × 3 = 999.
+**1원이 남는다.** 세 개를 다 반품해도 전액 환불이 안 된다.
+
+부분 환불은 **잔여를 마지막 건에 몰아주는** 방식으로 처리한다.
+
+```python
+def refund_amount(item, order) -> int:
+    if is_last_refundable(item, order):
+        return remaining_refundable(order)      # 남은 걸 전부
+    ratio = item.price / order.items_total
+    return item.price - round(order.discount * ratio)
+
+def test_full_refund_by_parts():
+    """부분 환불을 다 하면 결제액과 정확히 같아야 한다"""
+    total = sum(refund_amount(i, order) for i in order.items)
+    assert total == order.paid_amount
+```
+
+이 테스트가 부분 환불 로직의 핵심이다. 개별 금액이 조금 달라지는 건
+용인되지만, **합계가 안 맞는 건 절대 안 된다.**
+
+## 배송비는 정책을 정해야 한다
+
+기술 문제가 아니라 정책 문제인데, 정하지 않으면 코드가 못 정해진다.
+
+| 상황 | 흔한 정책 |
+| --- | --- |
+| 전량 반품 | 배송비 환불 (판매자 귀책이면) |
+| 부분 반품 | 배송비 환불 안 함 |
+| 무료배송 조건 미달로 떨어짐 | 배송비를 환불액에서 차감 |
+
+세 번째가 골치 아프다. 5만원 이상 무료배송인데 3만원어치를 반품하면
+남은 주문은 무료배송 대상이 아니게 된다. 이걸 소급 적용할지 말지를
+개발자가 임의로 정하면 안 된다. **정해진 답을 코드에 옮기는 것**이지
+코드가 정책을 만들면 CS 대응이 불가능해진다.
+
+## PG 쪽과 어긋날 수 있다
+
+환불 API를 호출하고 응답을 못 받으면, 환불이 됐는지 모른다.
+결제와 똑같은 문제다. **멱등키를 붙이고, 상태 조회로 확인한다.**
+
+```python
+def request_refund(refund_id, ...):
+    try:
+        res = pg.refund(idempotency_key=refund_id, ...)
+    except Timeout:
+        res = pg.get_refund(refund_id)      # 됐는지 물어본다
+        if res is None:
+            return                           # 아직 미확정. 배치가 재확인
+    mark_done(refund_id, res)
+```
+
+타임아웃을 즉시 실패로 처리하면 **PG는 환불했는데 내 DB는 미환불**인
+상태가 된다. 이건 이중 환불로 이어진다. 모르면 미확정으로 남기고
+대사 배치가 나중에 정리하게 한다.
+
+## 한 줄 요약
+
+> 환불 가능액은 저장하지 말고 SUM으로 계산, 삽입 시 `HAVING`으로 초과를 막고, 마지막 건에 잔여를 몰아 합계를 보존한다.
