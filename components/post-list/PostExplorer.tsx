@@ -32,6 +32,17 @@ export function PostExplorer({ posts, tags }: { posts: Post[]; tags: Tag[] }) {
     });
   }
 
+  // 태그 90여 개를 다 칩으로 깔면 검색보다 훑기가 더 힘들다.
+  // 필터는 상위 8개만. 나머지는 카드·본문의 해시태그로 도달한다.
+  // 해시태그로 들어온 태그(상위 8개 밖)는 해제할 수 있어야 하므로 합집합.
+  const visibleTags = useMemo(() => {
+    const top = tags.slice(0, 8);
+    const extra = tags.filter(
+      (t) => selected.includes(t.name) && !top.some((x) => x.name === t.name),
+    );
+    return [...top, ...extra];
+  }, [tags, selected]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return posts.filter((p) => {
@@ -50,7 +61,7 @@ export function PostExplorer({ posts, tags }: { posts: Post[]; tags: Tag[] }) {
     <div className="space-y-6">
       <SearchBar value={query} onChange={setQuery} />
       {tags.length > 0 && (
-        <TagFilter tags={tags} selected={selected} onToggle={toggle} />
+        <TagFilter tags={visibleTags} selected={selected} onToggle={toggle} />
       )}
       <p className="text-sm text-muted-foreground">{filtered.length}개의 글</p>
       <h2 className="sr-only">글 목록</h2>

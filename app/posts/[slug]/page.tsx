@@ -1,9 +1,10 @@
 import { notFound } from "next/navigation";
+import Link from "next/link";
 import type { Metadata } from "next";
 import { Container } from "@/components/layout/Container";
 import { getAllPosts, getPostBySlug } from "@/lib/content";
-import { coverSrc } from "@/lib/utils";
 import { buildMetadata } from "@/lib/metadata";
+import { Cover } from "@/components/post-list/Cover";
 import { Mdx } from "@/components/reader/Mdx";
 import { TOC } from "@/components/reader/TOC";
 import { ReadingProgress } from "@/components/reader/ReadingProgress";
@@ -56,13 +57,9 @@ export default async function PostPage({
             <p className="mt-3 text-sm text-muted-foreground">
               {post.date} · {post.readingTime} <ViewCounter slug={slug} />
             </p>
-            {/* 히어로 커버. LCP 대상이라 lazy 를 걸지 않는다 */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src={coverSrc(post)}
-              alt=""
-              fetchPriority="high"
-              className="mt-8 aspect-[16/9] w-full rounded-xl border object-cover"
+            <Cover
+              post={post}
+              className="mt-8 aspect-[16/9] w-full rounded-xl border"
             />
             {post.coverCredit && (
               <p className="mt-2 text-right text-xs text-muted-foreground">
@@ -77,6 +74,19 @@ export default async function PostPage({
             </div>
 
             <footer className="mt-14 border-t pt-8">
+              {post.tags.length > 0 && (
+                <div className="mb-10 flex flex-wrap gap-x-3 gap-y-2">
+                  {post.tags.map((t) => (
+                    <Link
+                      key={t}
+                      href={`/posts?tags=${encodeURIComponent(t)}`}
+                      className="text-sm font-medium text-brand-tag hover:underline"
+                    >
+                      #{t}
+                    </Link>
+                  ))}
+                </div>
+              )}
               <div className="flex justify-center">
                 <LikeButton slug={slug} />
               </div>
