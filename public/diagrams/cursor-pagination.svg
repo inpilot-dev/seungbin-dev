@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300" width="800" height="300" role="img" aria-label="OFFSET은 10만 행을 읽고 버리지만 커서는 20행만 읽는다">
+  <style>
+    .bg   { fill: #ffffff }
+    .fg   { fill: #0a0a0a }
+    .mut  { fill: #5a5a5c }
+    .box  { fill: #f2f3f5; stroke: #d3d6db }
+    .read { fill: #e5484d; opacity: .18 }
+    .keep { fill: #00d4a4 }
+    .edge { stroke: #b9bdc4; fill: none }
+    text  { font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif }
+    @media (prefers-color-scheme: dark) {
+      .bg  { fill: #0f0f10 }
+      .fg  { fill: #ededef }
+      .mut { fill: #8b8d93 }
+      .box { fill: #18181b; stroke: #2e3035 }
+      .edge{ stroke: #3a3d43 }
+      .read{ opacity: .28 }
+    }
+  </style>
+  <rect class="bg" width="800" height="300" rx="12"/>
+
+  <!-- OFFSET -->
+  <text class="fg" x="32" y="46" font-size="17" font-weight="600">LIMIT 20 OFFSET 100000</text>
+  <rect class="box" x="32" y="62" width="640" height="44" rx="6"/>
+  <rect class="read" x="33" y="63" width="618" height="42" rx="5"/>
+  <rect class="keep" x="652" y="63" width="19" height="42" rx="5"/>
+  <text class="mut" x="330" y="90" font-size="14" text-anchor="middle">읽고 → 버림 · 100,000행</text>
+  <text class="mut" x="690" y="90" font-size="13">20행</text>
+  <text class="fg" x="32" y="130" font-size="14">디스크에서 실제로 읽는 양 = <tspan font-weight="600">100,020행</tspan></text>
+
+  <line class="edge" x1="32" y1="158" x2="768" y2="158" stroke-dasharray="4 4"/>
+
+  <!-- CURSOR -->
+  <text class="fg" x="32" y="196" font-size="17" font-weight="600">WHERE (created_at, id) &lt; ($1, $2) LIMIT 20</text>
+  <rect class="box" x="32" y="212" width="640" height="44" rx="6"/>
+  <rect class="keep" x="652" y="213" width="19" height="42" rx="5"/>
+  <text class="mut" x="330" y="240" font-size="14" text-anchor="middle">인덱스로 건너뜀 · 읽지 않음</text>
+  <text class="mut" x="690" y="240" font-size="13">20행</text>
+  <text class="fg" x="32" y="280" font-size="14">디스크에서 실제로 읽는 양 = <tspan font-weight="600">20행</tspan> (페이지 번호와 무관하게 일정)</text>
+</svg>

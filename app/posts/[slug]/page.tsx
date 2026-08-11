@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import type { Metadata } from "next";
 import { Container } from "@/components/layout/Container";
 import { getAllPosts, getPostBySlug } from "@/lib/content";
+import { coverSrc } from "@/lib/utils";
 import { buildMetadata } from "@/lib/metadata";
 import { Mdx } from "@/components/reader/Mdx";
 import { TOC } from "@/components/reader/TOC";
@@ -55,6 +56,19 @@ export default async function PostPage({
             <p className="mt-3 text-sm text-muted-foreground">
               {post.date} · {post.readingTime} <ViewCounter slug={slug} />
             </p>
+            {/* 히어로 커버. LCP 대상이라 lazy 를 걸지 않는다 */}
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={coverSrc(post)}
+              alt=""
+              fetchPriority="high"
+              className="mt-8 aspect-[16/9] w-full rounded-xl border object-cover"
+            />
+            {post.coverCredit && (
+              <p className="mt-2 text-right text-xs text-muted-foreground">
+                {post.coverCredit}
+              </p>
+            )}
             <div
               id="post-body"
               className="prose prose-neutral mt-8 max-w-none dark:prose-invert prose-pre:overflow-x-auto prose-pre:rounded-lg prose-pre:bg-[var(--surface-code)] prose-pre:p-4"

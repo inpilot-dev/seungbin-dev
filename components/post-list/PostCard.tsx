@@ -1,5 +1,6 @@
 import Link from "next/link";
 import type { Post } from "@/types/content";
+import { coverSrc } from "@/lib/utils";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 
@@ -8,7 +9,17 @@ import { Badge } from "@/components/ui/badge";
 export function PostCard({ post }: { post: Post }) {
   return (
     <Card className="group relative flex flex-col overflow-hidden p-0 transition-shadow hover:shadow-md">
-      <div className="aspect-[16/9] w-full bg-gradient-to-br from-[#e9edf1] to-[#f3f0ea] dark:from-[#1c1c1e] dark:to-[#161617]" />
+      {/* 커버. 로드 전/실패 시 기존 그라데이션이 그대로 배경으로 남는다 */}
+      <div className="aspect-[16/9] w-full bg-gradient-to-br from-[#e9edf1] to-[#f3f0ea] dark:from-[#1c1c1e] dark:to-[#161617]">
+        {/* eslint-disable-next-line @next/next/no-img-element */}
+        <img
+          src={coverSrc(post)}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          className="h-full w-full object-cover transition-transform duration-300 group-hover:scale-[1.02]"
+        />
+      </div>
       <div className="flex flex-1 flex-col gap-2.5 p-5">
         {post.tags.length > 0 && (
           <div className="relative z-10 flex flex-wrap gap-1.5">

@@ -1,0 +1,61 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 330" width="800" height="330" role="img" aria-label="주문 상태 전이도: created에서 paid, shipped, delivered로 진행하고 cancelled, failed, refunded로 빠진다">
+  <style>
+    .bg    { fill: #ffffff }
+    .fg    { fill: #0a0a0a }
+    .mut   { fill: #5a5a5c }
+    .node  { fill: #f2f3f5; stroke: #d3d6db }
+    .happy { fill: rgba(0,212,164,.16); stroke: #00d4a4 }
+    .term  { fill: rgba(229,72,77,.12); stroke: #e5484d }
+    .edge  { stroke: #a8acb4; fill: none; stroke-width: 1.5; marker-end: url(#b) }
+    .back  { stroke: #a8acb4; fill: none; stroke-width: 1.5; stroke-dasharray: 5 4; marker-end: url(#b) }
+    text   { font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill: #0f0f10 }
+      .fg   { fill: #ededef }
+      .mut  { fill: #8b8d93 }
+      .node { fill: #18181b; stroke: #2e3035 }
+      .edge, .back { stroke: #55595f }
+    }
+  </style>
+  <defs>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a8acb4"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="800" height="330" rx="12"/>
+  <text class="fg" x="30" y="34" font-size="14" font-weight="600">전이표에 없는 화살표는 InvalidTransition 으로 거절된다</text>
+
+  <!-- happy path -->
+  <rect class="happy" x="30"  y="62" width="140" height="46" rx="8"/>
+  <text class="fg" x="100" y="91" font-size="15" text-anchor="middle" font-weight="600">created</text>
+  <rect class="happy" x="230" y="62" width="140" height="46" rx="8"/>
+  <text class="fg" x="300" y="91" font-size="15" text-anchor="middle" font-weight="600">paid</text>
+  <rect class="happy" x="430" y="62" width="140" height="46" rx="8"/>
+  <text class="fg" x="500" y="91" font-size="15" text-anchor="middle" font-weight="600">shipped</text>
+  <rect class="happy" x="630" y="62" width="140" height="46" rx="8"/>
+  <text class="fg" x="700" y="91" font-size="15" text-anchor="middle" font-weight="600">delivered</text>
+
+  <path class="edge" d="M170,85 H222"/>
+  <path class="edge" d="M370,85 H422"/>
+  <path class="edge" d="M570,85 H622"/>
+
+  <!-- terminal states -->
+  <rect class="term" x="30"  y="232" width="140" height="46" rx="8"/>
+  <text class="fg" x="100" y="261" font-size="15" text-anchor="middle" font-weight="600">cancelled</text>
+  <rect class="node" x="230" y="232" width="140" height="46" rx="8"/>
+  <text class="fg" x="300" y="261" font-size="15" text-anchor="middle" font-weight="600">failed</text>
+  <rect class="term" x="630" y="232" width="140" height="46" rx="8"/>
+  <text class="fg" x="700" y="261" font-size="15" text-anchor="middle" font-weight="600">refunded</text>
+
+  <!-- created → cancelled -->
+  <path class="edge" d="M85,108 V224"/>
+  <!-- created → failed, failed → created (되돌림) -->
+  <path class="edge" d="M140,108 V196 H285 V224"/>
+  <path class="back" d="M315,232 V178 H115 V110"/>
+  <!-- paid → refunded -->
+  <path class="edge" d="M300,108 V156 H665 V224"/>
+  <!-- delivered → refunded -->
+  <path class="back" d="M730,108 V224"/>
+
+  <text class="mut" x="30" y="308" font-size="13">실선 = 정상 전이 · 점선 = 되돌림 · cancelled / refunded 는 종료 상태</text>
+</svg>

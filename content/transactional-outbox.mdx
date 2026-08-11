@@ -4,6 +4,8 @@ description: "커밋과 메시지 발행은 하나의 트랜잭션이 될 수 �
 date: "2026-05-30"
 category: "Build"
 tags: ["아키텍처", "이벤트", "트랜잭션", "백엔드"]
+coverImage: "/covers/rails.jpg"
+coverCredit: "사진: Alexander Shustov / Unsplash"
 ---
 
 ## 두 시스템에 동시에 쓸 수는 없다
@@ -41,6 +43,8 @@ with db.transaction():
     db.execute("INSERT INTO outbox (topic, payload) VALUES (%s, %s)",
                "order.created", payload)
 ```
+
+![주문과 아웃박스가 같은 트랜잭션으로 커밋되고 릴레이가 브로커로 발행한다](/diagrams/transactional-outbox.svg "유실 창은 사라지지만 중복은 남는다. 그래서 소비자가 멱등해야 한다")
 
 주문과 이벤트가 **함께 커밋되거나 함께 롤백된다.** 원자성이 확보됐다.
 발행은 별도 프로세스가 아웃박스를 읽어서 한다.

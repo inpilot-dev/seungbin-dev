@@ -19,6 +19,24 @@ const mdxOptions = {
 
 const components = {
   pre: CodeBlock,
+  // 본문 이미지. 마크다운 title(`![alt](src "캡션")`)이 있으면 캡션으로 붙인다.
+  img: ({ title, alt, ...props }: ComponentPropsWithoutRef<"img">) => (
+    <figure className="my-8">
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        {...props}
+        alt={alt ?? ""}
+        loading="lazy"
+        decoding="async"
+        className="w-full rounded-lg border"
+      />
+      {title && (
+        <figcaption className="mt-2 text-center text-sm text-muted-foreground">
+          {title}
+        </figcaption>
+      )}
+    </figure>
+  ),
   // 넓은 표는 자체 가로 스크롤 컨테이너로 (모바일 오버플로우/클리핑 방지)
   table: (props: ComponentPropsWithoutRef<"table">) => (
     <div className="overflow-x-auto">

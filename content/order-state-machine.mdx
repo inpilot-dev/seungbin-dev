@@ -4,6 +4,8 @@ description: "is_paid, is_cancelled, is_shipped 조합은 8가지인데 유효�
 date: "2025-12-28"
 category: "Build"
 tags: ["상태머신", "주문", "결제", "백엔드"]
+coverImage: "/covers/desk.jpg"
+coverCredit: "사진: Vadim Sherbakov / Unsplash"
 ---
 
 ## 플래그가 늘어나면 조합이 폭발한다
@@ -60,6 +62,8 @@ def transition(order, to: str):
         raise InvalidTransition(f"{order.status} → {to}")
     order.status = to
 ```
+
+![주문 상태 전이도](/diagrams/order-state-machine.svg "실선이 정상 전이, 점선이 되돌림. 표에 없는 화살표는 전부 거절된다")
 
 `if`로 흩어져 있으면 새 상태를 추가할 때 전부 찾아 고쳐야 한다.
 표로 두면 한 곳만 바뀌고, **가능한 전이 목록 자체를 테스트할 수 있다.**

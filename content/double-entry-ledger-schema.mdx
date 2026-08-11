@@ -4,6 +4,8 @@ description: "balance를 직접 갱신하면 왜 언젠가 안 맞는지, 그리
 date: "2026-08-08"
 category: "Build"
 tags: ["원장", "정산", "DB스키마", "핀테크"]
+coverImage: "/covers/city.jpg"
+coverCredit: "사진: Vadim Sherbakov / Unsplash"
 ---
 
 ## 처음엔 다 이렇게 짠다
@@ -41,6 +43,8 @@ A가 B에게 5,000원을 보내면 **두 행**이 들어간다.
 | --- | --- | --- |
 | `tx_1` | A | `-5000` |
 | `tx_1` | B | `+5000` |
+
+![한 거래의 행들을 합하면 0이 되고 잔액은 합계로 계산된다](/diagrams/double-entry-ledger.svg "합이 0이라는 성질 덕분에 원장 전체를 질의 하나로 검증할 수 있다")
 
 이게 복식부기다. 한 거래의 행들을 합하면 **항상 0**이 된다.
 이 성질 덕분에 전체 원장을 검증할 수 있다.

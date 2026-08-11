@@ -12,6 +12,8 @@ export interface Post {
   /** 예: "5 min read" — lib/content 에서 본문 길이로 계산 */
   readingTime: string;
   coverImage?: string;
+  /** 커버 사진 출처 표기. 외부 사진을 쓸 때만 채운다 */
+  coverCredit?: string;
 }
 
 export interface Author {

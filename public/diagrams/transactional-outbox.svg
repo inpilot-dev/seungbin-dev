@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 330" width="800" height="330" role="img" aria-label="주문과 아웃박스가 같은 트랜잭션으로 커밋되고 별도 릴레이가 브로커로 발행한다">
+  <style>
+    .bg   { fill: #ffffff }
+    .fg   { fill: #0a0a0a }
+    .mut  { fill: #5a5a5c }
+    .box  { fill: #f2f3f5; stroke: #d3d6db }
+    .tx   { fill: rgba(0,212,164,.10); stroke: #00d4a4; stroke-dasharray: 6 4 }
+    .edge { stroke: #a8acb4; fill: none; marker-end: url(#b) }
+    text  { font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif }
+    code  { font-family: ui-monospace, SFMono-Regular, Menlo, monospace }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill: #0f0f10 }
+      .fg   { fill: #ededef }
+      .mut  { fill: #8b8d93 }
+      .box  { fill: #18181b; stroke: #2e3035 }
+      .edge { stroke: #55595f }
+    }
+  </style>
+  <defs>
+    <marker id="b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a8acb4"/>
+    </marker>
+  </defs>
+  <rect class="bg" width="800" height="330" rx="12"/>
+
+  <!-- transaction boundary -->
+  <rect class="tx" x="24" y="52" width="330" height="150" rx="10"/>
+  <text x="40" y="76" class="fg" font-size="13" font-weight="600">하나의 DB 트랜잭션</text>
+
+  <rect class="box" x="48" y="92" width="130" height="44" rx="7"/>
+  <text class="fg" x="113" y="119" font-size="14" text-anchor="middle">orders</text>
+  <rect class="box" x="200" y="92" width="130" height="44" rx="7"/>
+  <text class="fg" x="265" y="119" font-size="14" text-anchor="middle">outbox</text>
+  <text class="mut" x="48" y="168" font-size="13">함께 커밋되거나 함께 롤백된다.</text>
+  <text class="mut" x="48" y="188" font-size="13">둘 사이에 유실 창이 없다.</text>
+
+  <!-- relay -->
+  <rect class="box" x="420" y="92" width="150" height="44" rx="7"/>
+  <text class="fg" x="495" y="112" font-size="14" text-anchor="middle">relay</text>
+  <text class="mut" x="495" y="128" font-size="11" text-anchor="middle">SKIP LOCKED</text>
+
+  <!-- broker -->
+  <rect class="box" x="620" y="92" width="150" height="44" rx="7"/>
+  <text class="fg" x="695" y="119" font-size="14" text-anchor="middle">message broker</text>
+
+  <path class="edge" d="M332,114 H412"/>
+  <path class="edge" d="M572,114 H612"/>
+  <path class="edge" d="M495,140 V166 H265 V142" stroke-dasharray="4 4"/>
+  <text class="mut" x="380" y="182" font-size="12" text-anchor="middle">published_at 갱신</text>
+
+  <!-- at-least-once note -->
+  <line x1="24" y1="232" x2="776" y2="232" stroke="#d3d6db" stroke-dasharray="4 4"/>
+  <text class="fg" x="24" y="262" font-size="14" font-weight="600">발행 후 · 갱신 전에 죽으면 → 같은 이벤트가 한 번 더 나간다</text>
+  <text class="mut" x="24" y="286" font-size="13">보장되는 것은 exactly-once 가 아니라 at-least-once 다.</text>
+  <text class="mut" x="24" y="306" font-size="13">그래서 소비자 쪽이 반드시 멱등해야 짝이 맞는다.</text>
+</svg>

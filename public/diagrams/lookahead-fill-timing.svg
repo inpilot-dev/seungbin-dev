@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 300" width="800" height="300" role="img" aria-label="종가로 신호를 만들고 같은 종가에 체결하면 룩어헤드, 다음 봉 시가에 체결해야 한다">
+  <style>
+    .bg   { fill: #ffffff }
+    .fg   { fill: #0a0a0a }
+    .mut  { fill: #5a5a5c }
+    .bar  { fill: #b9bdc4 }
+    .axis { stroke: #d3d6db }
+    .bad  { fill: #e5484d }
+    .ok   { fill: #00d4a4 }
+    .badl { stroke: #e5484d; fill: none }
+    .okl  { stroke: #00d4a4; fill: none }
+    text  { font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill: #0f0f10 }
+      .fg   { fill: #ededef }
+      .mut  { fill: #8b8d93 }
+      .bar  { fill: #4a4d53 }
+      .axis { stroke: #2e3035 }
+    }
+  </style>
+  <rect class="bg" width="800" height="300" rx="12"/>
+  <text class="fg" x="32" y="42" font-size="15" font-weight="600">신호는 t 봉의 종가로 만들어진다. 그 종가는 장이 끝나야 확정된다.</text>
+
+  <line class="axis" x1="32" y1="200" x2="768" y2="200"/>
+
+  <!-- candles -->
+  <rect class="bar" x="150" y="120" width="34" height="80" rx="3"/>
+  <text class="mut" x="167" y="222" font-size="13" text-anchor="middle">t</text>
+  <rect class="bar" x="380" y="140" width="34" height="60" rx="3"/>
+  <text class="mut" x="397" y="222" font-size="13" text-anchor="middle">t+1</text>
+  <rect class="bar" x="610" y="150" width="34" height="50" rx="3"/>
+  <text class="mut" x="627" y="222" font-size="13" text-anchor="middle">t+2</text>
+
+  <!-- signal point -->
+  <circle class="fg" cx="167" cy="120" r="5"/>
+  <text class="fg" x="150" y="86" font-size="12" text-anchor="end">t 종가 · 신호 발생</text>
+
+  <!-- wrong fill -->
+  <path class="badl" d="M175,124 C210,96 210,96 250,96" stroke-width="2"/>
+  <circle class="bad" cx="167" cy="120" r="9" fill-opacity=".25"/>
+  <text class="bad" x="258" y="100" font-size="13" font-weight="600">같은 종가에 체결 → 룩어헤드</text>
+
+  <!-- right fill -->
+  <path class="okl" d="M175,132 C280,168 300,140 372,140" stroke-width="2"/>
+  <circle class="ok" cx="397" cy="140" r="5"/>
+  <text class="ok" x="412" y="136" font-size="13" font-weight="600">다음 봉 시가에 체결</text>
+
+  <line class="axis" x1="32" y1="248" x2="768" y2="248" stroke-dasharray="4 4"/>
+  <text class="mut" x="32" y="278" font-size="13">이 한 줄을 고치자 내 백테스트 연 수익률은 80%대에서 20%대로 내려갔다.</text>
+</svg>

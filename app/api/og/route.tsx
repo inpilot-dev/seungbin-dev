@@ -18,7 +18,12 @@ async function loadFont(origin: string): Promise<ArrayBuffer | null> {
 
 export async function GET(req: Request) {
   const { searchParams, origin } = new URL(req.url);
-  const title = (searchParams.get("title") ?? "inpilot.dev").slice(0, 100);
+  // bare=1: 사이트 내부 커버용. 카드·본문에 제목이 이미 있으므로 제목 대신
+  // 카테고리 라벨을 크게 쓴다. 소셜 공유 카드(기본)는 제목을 그대로 유지.
+  const bare = searchParams.get("bare") === "1";
+  const title = bare
+    ? (searchParams.get("label") ?? "").slice(0, 24)
+    : (searchParams.get("title") ?? "inpilot.dev").slice(0, 100);
   const tags = (searchParams.get("tags") ?? "")
     .split(",")
     .map((t) => t.trim())
@@ -46,11 +51,20 @@ export async function GET(req: Request) {
           <div style={{ width: 18, height: 18, borderRadius: 9999, background: "#00d4a4" }} />
           inpilot.dev
         </div>
-        <div style={{ display: "flex", fontSize: 64, lineHeight: 1.15, letterSpacing: -1 }}>
+        <div
+          style={{
+            display: "flex",
+            fontSize: bare ? 110 : 64,
+            lineHeight: 1.15,
+            letterSpacing: -1,
+            color: bare ? "#c9ccd1" : "#0a0a0a",
+          }}
+        >
           {title}
         </div>
         <div style={{ display: "flex", gap: 12 }}>
-          {tags.map((t) => (
+          {/* bare(사이트 내부 커버)는 카드에 태그가 이미 있으므로 생략 */}
+          {(bare ? [] : tags).map((t) => (
             <div
               key={t}
               style={{

@@ -4,6 +4,8 @@ description: "미래 데이터가 새어 들어오는 경로 네 가지 — 종�
 date: "2026-08-01"
 category: "Build"
 tags: ["퀀트", "백테스트", "자동매매", "데이터"]
+coverImage: "/covers/skyline.jpg"
+coverCredit: "사진: Oleg Chursin / Unsplash"
 ---
 
 ## 처음 돌린 백테스트는 연 80%가 나왔다
@@ -31,6 +33,8 @@ if close[t] > ma20[t]:
 if close[t] > ma20[t]:
     buy(price=open[t + 1])
 ```
+
+![신호는 t 종가, 체결은 t+1 시가](/diagrams/lookahead-fill-timing.svg "종가를 보고 그 종가에 사는 건 물리적으로 불가능하다")
 
 이거 하나 고쳤더니 연 80%가 20%대로 떨어졌다. 나머지 60%는 전부 환상이었다.
 

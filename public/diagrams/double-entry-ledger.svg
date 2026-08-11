@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 330" width="800" height="330" role="img" aria-label="한 거래의 원장 행들을 합하면 항상 0이 되고 잔액은 합계로 계산된다">
+  <style>
+    .bg   { fill: #ffffff }
+    .fg   { fill: #0a0a0a }
+    .mut  { fill: #5a5a5c }
+    .row  { fill: #f2f3f5; stroke: #d3d6db }
+    .neg  { fill: #e5484d }
+    .pos  { fill: #00a37a }
+    .sum  { fill: rgba(0,212,164,.12); stroke: #00d4a4 }
+    .axis { stroke: #d3d6db }
+    text  { font-family: ui-sans-serif, -apple-system, "Segoe UI", sans-serif }
+    .m    { font-family: ui-monospace, SFMono-Regular, Menlo, monospace }
+    @media (prefers-color-scheme: dark) {
+      .bg   { fill: #0f0f10 }
+      .fg   { fill: #ededef }
+      .mut  { fill: #8b8d93 }
+      .row  { fill: #18181b; stroke: #2e3035 }
+      .axis { stroke: #2e3035 }
+      .pos  { fill: #00d4a4 }
+    }
+  </style>
+  <rect class="bg" width="800" height="330" rx="12"/>
+  <text class="fg" x="32" y="42" font-size="15" font-weight="600">A → B 5,000원 이체 = 두 행. 삭제도 수정도 없다.</text>
+
+  <!-- header -->
+  <text class="mut" x="48"  y="76" font-size="12">tx_id</text>
+  <text class="mut" x="230" y="76" font-size="12">account_id</text>
+  <text class="mut" x="600" y="76" font-size="12" text-anchor="end">amount_minor</text>
+
+  <rect class="row" x="32" y="86"  width="600" height="42" rx="6"/>
+  <text class="fg m" x="48"  y="113" font-size="14">tx_1</text>
+  <text class="fg m" x="230" y="113" font-size="14">A</text>
+  <text class="neg m" x="600" y="113" font-size="15" text-anchor="end" font-weight="600">-5000</text>
+
+  <rect class="row" x="32" y="134" width="600" height="42" rx="6"/>
+  <text class="fg m" x="48"  y="161" font-size="14">tx_1</text>
+  <text class="fg m" x="230" y="161" font-size="14">B</text>
+  <text class="pos m" x="600" y="161" font-size="15" text-anchor="end" font-weight="600">+5000</text>
+
+  <line class="axis" x1="380" y1="188" x2="632" y2="188"/>
+  <rect class="sum" x="380" y="196" width="252" height="40" rx="6"/>
+  <text class="fg" x="396" y="222" font-size="13">SUM(amount_minor)</text>
+  <text class="fg m" x="616" y="222" font-size="15" text-anchor="end" font-weight="700">0</text>
+  <text class="mut" x="648" y="222" font-size="12">← 항상</text>
+
+  <line class="axis" x1="32" y1="262" x2="768" y2="262" stroke-dasharray="4 4"/>
+  <text class="fg" x="32" y="290" font-size="14" font-weight="600">잔액 = 스냅샷 + 그 이후 행들의 합</text>
+  <text class="mut" x="32" y="312" font-size="13">스냅샷을 통째로 날려도 같은 값이 나온다. 그래서 그건 캐시이지 두 번째 진실이 아니다.</text>
+</svg>

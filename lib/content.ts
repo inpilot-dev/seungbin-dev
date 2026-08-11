@@ -22,6 +22,7 @@ function parseFile(slug: string): { post: Post; content: string } {
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     category: typeof data.category === "string" ? data.category : undefined,
     coverImage: typeof data.coverImage === "string" ? data.coverImage : undefined,
+    coverCredit: typeof data.coverCredit === "string" ? data.coverCredit : undefined,
     readingTime: readingTimeOf(content),
   };
   return { post, content };
