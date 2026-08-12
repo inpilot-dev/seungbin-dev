@@ -21,8 +21,6 @@ function parseFile(slug: string): { post: Post; content: string } {
     date: data.date ? String(data.date).slice(0, 10) : "",
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     category: typeof data.category === "string" ? data.category : undefined,
-    coverImage: typeof data.coverImage === "string" ? data.coverImage : undefined,
-    coverCredit: typeof data.coverCredit === "string" ? data.coverCredit : undefined,
     coverCmd: typeof data.coverCmd === "string" ? data.coverCmd : undefined,
     coverOut: typeof data.coverOut === "string" ? data.coverOut : undefined,
     readingTime: readingTimeOf(content),
