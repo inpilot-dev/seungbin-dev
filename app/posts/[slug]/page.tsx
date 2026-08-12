@@ -59,13 +59,9 @@ export default async function PostPage({
             </p>
             <Cover
               post={post}
-              className="mt-8 aspect-[16/9] w-full rounded-xl border"
+              lg
+              className="mt-8 aspect-[21/9] w-full rounded-xl border"
             />
-            {post.coverCredit && (
-              <p className="mt-2 text-right text-xs text-muted-foreground">
-                {post.coverCredit}
-              </p>
-            )}
             <div
               id="post-body"
               className="prose prose-neutral mt-8 max-w-none dark:prose-invert prose-pre:overflow-x-auto prose-pre:rounded-lg prose-pre:bg-[var(--surface-code)] prose-pre:p-4"

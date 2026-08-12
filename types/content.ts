@@ -14,6 +14,10 @@ export interface Post {
   coverImage?: string;
   /** 커버 사진 출처 표기. 외부 사진을 쓸 때만 채운다 */
   coverCredit?: string;
+  /** 터미널 커버에 찍을 명령 한 줄 (글에서 실제로 나오는 것) */
+  coverCmd?: string;
+  /** 그 명령의 출력 한 줄. 없으면 명령만 */
+  coverOut?: string;
 }
 
 export interface Author {

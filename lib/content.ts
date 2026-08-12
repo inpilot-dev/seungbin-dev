@@ -23,6 +23,8 @@ function parseFile(slug: string): { post: Post; content: string } {
     category: typeof data.category === "string" ? data.category : undefined,
     coverImage: typeof data.coverImage === "string" ? data.coverImage : undefined,
     coverCredit: typeof data.coverCredit === "string" ? data.coverCredit : undefined,
+    coverCmd: typeof data.coverCmd === "string" ? data.coverCmd : undefined,
+    coverOut: typeof data.coverOut === "string" ? data.coverOut : undefined,
     readingTime: readingTimeOf(content),
   };
   return { post, content };
