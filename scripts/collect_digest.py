@@ -112,10 +112,30 @@ X_URL = "https://syndication.twitter.com/srv/timeline-profile/screen-name/"
 X_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
 
+# ── Bluesky (무인증·레이트리밋 없음) ──────────────────────────────────────
+# X 를 보강하는 게 아니라 **X 자리를 메운다**. syndication 이 막히면 "반응" 축이
+# 통째로 비는데, 그때 논평을 붙일 소재가 공지(회사 발표)만 남는다.
+# 2026-09-03 실측: 무인증 200, 레이트리밋 없음. X 는 같은 날 회전 대상 3개 전부 429.
+#
+# 커버리지는 X 보다 확실히 얇다. 검색으로 71개 계정을 훑어 "3일 내 게시 +
+# likes 20 이상"만 남긴 결과가 아래다. karpathy(1194일 전)·swyx(170일 전)·
+# Anthropic(0건)·HuggingFace(0건)은 Bluesky 에선 사실상 죽어 있어 뺐고,
+# Simon Willison·Ars Technica 는 이미 FEEDS 에 RSS 로 있어 중복이라 뺐다.
+BSKY_HANDLES = [
+    "danluu.com",            # 2026-09-03 실측: 0일 전 · likes 337
+    "404media.co",           # 0일 전 · likes 217 — 기술 저널리즘
+    "emollick.bsky.social",  # 0일 전 · likes 35  — AI 활용 논평
+    "tmlrorg.bsky.social",   # 2일 전 · likes 31  — ML 논문
+]
+BSKY_PER_RUN = 3
+BSKY_MIN_LIKES = 5   # X_MIN_FAVS(50)보다 낮다 — Bluesky 는 모집단 자체가 작다
+BSKY_URL = ("https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
+            "?filter=posts_no_replies&limit=20&actor=")
+
 # LLM에 넘길 상한 — 토큰·비용 통제. 소스 수와 맞춰 둔다: interleave()는 소스별로
 # 1건씩 도는데 이 값이 소스 수보다 작으면 뒷 소스가 통째로 잘리고, 그러면 FEEDS
 # 끝에 있는 금융 축이 조용히 20% 아래로 떨어진다 (2026-08-28 실측으로 확인).
-MAX_ITEMS = 1 + REDDIT_PER_RUN + X_PER_RUN + len(FEEDS)  # HN 1 + 회전 소스 + 피드
+MAX_ITEMS = 1 + REDDIT_PER_RUN + X_PER_RUN + BSKY_PER_RUN + len(FEEDS)
 
 
 def fetch(url: str, timeout: int = 20, ua: str = UA) -> bytes | None:
@@ -228,6 +248,38 @@ def parse_x(raw: bytes, handle: str) -> list[dict]:
             out.append({"source": f"X @{handle}",
                         "title": clean(text)[:200],
                         "url": "https://x.com" + link})
+    return out[:PER_FEED]
+
+
+def parse_bsky(raw: bytes, handle: str) -> list[dict]:
+    """Bluesky public API(무인증) 응답에서 최근 게시물만 뽑는다.
+
+    getAuthorFeed 는 최신순이지만 고정글(pinned)이 맨 앞에 끼어들 수 있다 —
+    X 와 같은 이유로 날짜 필터가 필수다. 필터가 없으면 몇 달 전 고정글이
+    매일 다이제스트 맨 위에 실린다.
+    """
+    try:
+        feed = json.loads(raw)["feed"]
+    except Exception:
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=X_MAX_AGE_DAYS)
+    out = []
+    for e in feed:
+        post = e.get("post") or {}
+        rec = post.get("record") or {}
+        try:
+            dt = datetime.fromisoformat(str(rec["createdAt"]).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt < cutoff or post.get("likeCount", 0) < BSKY_MIN_LIKES:
+            continue
+        text = rec.get("text") or ""
+        rkey = str(post.get("uri", "")).rsplit("/", 1)[-1]
+        if text and rkey:
+            out.append({"source": f"bsky @{handle}",
+                        "title": clean(text)[:200],
+                        "url": f"https://bsky.app/profile/{handle}/post/{rkey}"})
     return out[:PER_FEED]
 
 
@@ -369,6 +421,15 @@ def main() -> int:
         if raw:
             collected += parse_x(raw, handle)
 
+    # Bluesky 는 레이트리밋이 없으므로 throttled 를 건드리지 않는다.
+    # X 바로 뒤에 두는 건 우선순위 때문이다 — 위 주석대로 순서가 곧 우선순위고,
+    # X 가 429 로 0건이 되는 날 "반응" 축을 대신 채워야 하는 자리가 여기다.
+    for handle in rotate(BSKY_HANDLES, BSKY_PER_RUN, day):
+        print(f"수집: bsky @{handle}")
+        raw = fetch(BSKY_URL + handle)
+        if raw:
+            collected += parse_bsky(raw, handle)
+
     for name, url in FEEDS:
         print(f"수집: {name}")
         raw = fetch(url)
@@ -472,6 +533,26 @@ def selftest() -> int:
     assert parse_x(x_page(X_MAX_AGE_DAYS + 1, 9999), "OpenAI") == []      # 오래됨 → 탈락
     assert parse_x(x_page(0, X_MIN_FAVS - 1), "OpenAI") == []             # 노이즈 → 탈락
     assert parse_x(b"Rate limit exceeded", "OpenAI") == []                # 429 → 빈손
+
+    # Bluesky: 고정글(pinned)이 최신순 앞에 끼어들 수 있어 X와 같은 함정이 있다.
+    # 날짜 필터가 빠지면 몇 달 전 고정글이 매일 맨 위에 실린다.
+    def bsky_page(days_ago: int, likes: int) -> bytes:
+        dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        return json.dumps({"feed": [{"post": {
+            "uri": "at://did:plc:abc/app.bsky.feed.post/3muk6m2n36o2t",
+            "likeCount": likes,
+            "record": {"text": "Claude Code 로 다이제스트 자동화",
+                       "createdAt": dt.isoformat().replace("+00:00", "Z")},
+        }}]}).encode()
+
+    got = parse_bsky(bsky_page(0, 100), "danluu.com")
+    assert len(got) == 1, got
+    assert got[0]["url"] == (
+        "https://bsky.app/profile/danluu.com/post/3muk6m2n36o2t"), got
+    assert got[0]["source"] == "bsky @danluu.com", got
+    assert parse_bsky(bsky_page(X_MAX_AGE_DAYS + 1, 999), "danluu.com") == []  # 오래됨
+    assert parse_bsky(bsky_page(0, BSKY_MIN_LIKES - 1), "danluu.com") == []    # 노이즈
+    assert parse_bsky(b"<html>502</html>", "danluu.com") == []                 # 비-JSON
 
     # 회전: 하루하루 다른 창을 보되 목록 밖으로 나가지 않아야 한다
     subs = ["a", "b", "c", "d", "e"]
