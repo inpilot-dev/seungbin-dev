@@ -35,12 +35,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v7
         with:
           # .published.json 원장을 읽으려면 머지 결과 커밋이 필요하다
           ref: main
 
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
@@ -63,15 +63,19 @@ jobs:
             echo "file=$FILE" >> "$GITHUB_OUTPUT"
           fi
 
+      # 아래 두 스텝 모두 파일 경로를 env 로 받는다 — 브랜치명에서 파생된 값이라
+      # run 본문에 ${{ }} 로 끼워넣으면 스크립트 인젝션 경로가 된다.
       - name: Dry run (무엇이 나갈지 로그에 먼저 남긴다)
         if: steps.pick.outputs.file != ''
         env:
           DRY_RUN: "1"
-        run: python scripts/publish_threads.py "${{ steps.pick.outputs.file }}"
+          DIGEST_FILE: ${{ steps.pick.outputs.file }}
+        run: python scripts/publish_threads.py "$DIGEST_FILE"
 
       - name: Publish to Threads
         if: steps.pick.outputs.file != ''
         env:
           THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
-        run: python scripts/publish_threads.py "${{ steps.pick.outputs.file }}"
+          DIGEST_FILE: ${{ steps.pick.outputs.file }}
+        run: python scripts/publish_threads.py "$DIGEST_FILE"
