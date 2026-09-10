@@ -28,7 +28,10 @@ _shots/
 _bmad/
 _bmad-output/
 .claude/
-docs/
+docs/*
+# 예외: 말투 규칙은 CI(post-drafts)가 읽어야 해서 추적한다.
+# docs/ 를 통째로 제외하면 git이 디렉터리로 내려가지 않아 이 예외가 안 먹는다.
+!docs/voice.md
 DESIGN-mintlify.md
 
 # 별도 콘텐츠 작업물 (공개 repo 제외)

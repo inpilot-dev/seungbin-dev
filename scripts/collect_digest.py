@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
@@ -32,26 +33,50 @@ UA = "Mozilla/5.0 (compatible; inpilot-digest/1.0; +https://inpilot.dev)"
 DIGEST_DIR = Path(__file__).resolve().parent.parent / "digest"
 SEEN_PATH = DIGEST_DIR / ".seen.json"
 SEEN_KEEP = 2000  # 최근 N개 URL만 기억 (파일 무한 증식 방지)
-MAX_ITEMS = 25    # LLM에 넘길 상한 — 토큰·비용 통제
 PER_FEED = 8      # 피드당 상한. 일부 피드는 전체 아카이브를 뱉는다(OpenAI 블로그 1100건)
+# MAX_ITEMS는 소스 목록을 다 정의한 뒤 아래에서 계산한다.
 
-# 2026-08-06 실측으로 살아있는 것만. 죽은 소스는 조용히 스킵된다.
-# HN이 맨 앞 — 유일하게 품질 필터(points>100)가 걸린 소스라 상한에 먼저 들어가야 한다.
+# 2026-08-28 전수 재실측으로 살아있는 것만 (docs/crawling-plan.md §1에 근거).
+# 죽은 소스는 조용히 스킵된다. 제거: Product Hunt(AI 뉴스 아님).
+# 후보에서 기각: Anthropic 뉴스 RSS·Meta AI 블로그·The Batch(전부 404),
+#               Papers with Code(HTML 셸), HF papers RSS(401).
+# HN이 맨 앞 — 품질 필터(points>100)가 걸린 소스라 상한에 먼저 들어가야 한다.
 #
 # "공지"(회사 발표·릴리스)와 "반응"(써보고 남긴 말)을 섞는다. 논평 1줄을 붙이기
 # 쉬운 쪽은 반응이고, 발행 수를 정하는 건 수집량이 아니라 논평이 나오느냐다.
+# 금융은 소스 개수비로 비중을 잡는다 — interleave()가 소스별 라운드로빈이므로
+# 금융 5 : 나머지 ~20 ≈ 20%가 그대로 결과 비율이 된다.
 FEEDS = [
-    # 반응 — 사람이 써보고 남긴 것
+    # 반응 — 사람이 써보고 남긴 것 (논평이 제일 잘 나오는 축)
     ("Simon Willison", "https://simonwillison.net/atom/everything/"),
     ("Lobsters", "https://lobste.rs/rss"),
     ("dev.to AI", "https://dev.to/feed/tag/ai"),
     ("Pragmatic Engineer", "https://blog.pragmaticengineer.com/rss/"),
     ("Latent Space", "https://www.latent.space/feed"),
+    ("Import AI", "https://importai.substack.com/feed"),
+    ("AI News (smol.ai)", "https://buttondown.com/ainews/rss"),
+    ("Sebastian Raschka", "https://magazine.sebastianraschka.com/feed"),
+    # 해외 AI 뉴스 — 매체
+    ("Techmeme", "https://www.techmeme.com/feed.xml"),
+    ("TechCrunch AI", "https://techcrunch.com/category/artificial-intelligence/feed/"),
+    ("Ars Technica AI", "https://arstechnica.com/ai/feed/"),
+    ("The Verge AI", "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"),
+    ("MIT Tech Review AI", "https://www.technologyreview.com/topic/artificial-intelligence/feed"),
+    ("Google News AI", "https://news.google.com/rss/search?q=artificial+intelligence+when:1d&hl=en-US&gl=US&ceid=US:en"),
     # 공지 — 회사 발표·릴리스·신제품
     ("OpenAI Blog", "https://openai.com/blog/rss.xml"),
     ("HuggingFace Blog", "https://huggingface.co/blog/feed.xml"),
+    ("Google DeepMind", "https://deepmind.google/blog/rss.xml"),
     ("GitHub Trending", "https://mshibanami.github.io/GitHubTrendingRSS/daily/python.xml"),
-    ("Product Hunt", "https://www.producthunt.com/feed"),
+    # 연구
+    ("arXiv cs.AI", "http://export.arxiv.org/api/query?search_query=cat:cs.AI&sortBy=submittedDate&sortOrder=descending&max_results=10"),
+    # 금융 — 전체의 약 20% 목표
+    ("SEC EDGAR 8-K", "https://www.sec.gov/cgi-bin/browse-edgar?action=getcurrent&type=8-K&company=&dateb=&owner=include&count=40&output=atom"),
+    ("Federal Reserve", "https://www.federalreserve.gov/feeds/press_all.xml"),
+    ("Google News AI×주식", "https://news.google.com/rss/search?q=stock+market+AI+when:1d&hl=en-US&gl=US&ceid=US:en"),
+    ("Yahoo Finance", "https://finance.yahoo.com/news/rssindex"),
+    ("CNBC Markets", "https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=10000664"),
+    ("MarketWatch", "https://feeds.content.dowjones.io/public/rss/mw_topstories"),
     # 국내
     ("GeekNews", "https://feeds.feedburner.com/geeknews-feed"),
     ("요즘IT", "https://yozm.wishket.com/magazine/feed/"),
@@ -59,9 +84,62 @@ FEEDS = [
 # HN은 RSS가 1건만 주므로 Algolia 공개 API 사용 (포인트 필터 가능)
 HN_API = "https://hn.algolia.com/api/v1/search_by_date?tags=story&numericFilters=points%3E100&hitsPerPage=15"
 
+# ── 레이트리밋 걸린 소스 (Reddit·X) ────────────────────────────────────────
+# 둘 다 무인증으로 되지만 IP당 연속 2~3회면 429다 (2026-08-28 실측).
+# 그래서 한 번에 전부 긁지 않고 날짜로 회전시킨다 — 며칠에 걸쳐 전체를 돈다.
+# 실패해도 fetch()가 None을 주고 나머지 수집은 그대로 산다.
+THROTTLE_SEC = 20      # 레이트리밋 소스 요청 간 간격
+REDDIT_PER_RUN = 2     # 실측: 연속 3번째부터 429
+X_PER_RUN = 3
 
-def fetch(url: str, timeout: int = 20) -> bytes | None:
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
+REDDIT_SUBS = [
+    "LocalLLaMA", "MachineLearning", "singularity", "ClaudeAI",
+    "OpenAI", "artificial", "LLMDevs",
+    "stocks", "wallstreetbets",  # 금융 축
+]
+# X 핸들. syndication 엔드포인트는 계정에 따라 최신 타임라인(약 20건)을 주기도,
+# 몇 년 치 인기 트윗(약 100건)을 주기도 한다 — 그래서 날짜 필터가 필수다.
+# 오래된 것만 주는 계정은 자동으로 0건이 되고 조용히 빠진다.
+X_HANDLES = [
+    "OpenAI", "AnthropicAI", "GoogleDeepMind", "huggingface",
+    "karpathy", "sama", "swyx", "_akhaliq",
+    "DeItaone", "unusual_whales",  # 금융 축
+]
+X_MAX_AGE_DAYS = 3   # 이보다 오래된 트윗은 뉴스가 아니다
+X_MIN_FAVS = 50      # HN의 points>100에 해당하는 노이즈 필터
+X_URL = "https://syndication.twitter.com/srv/timeline-profile/screen-name/"
+# 이 엔드포인트는 브라우저 임베드 위젯용이라 봇 UA를 주면 빈손이 온다
+X_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36")
+
+# ── Bluesky (무인증·레이트리밋 없음) ──────────────────────────────────────
+# X 를 보강하는 게 아니라 **X 자리를 메운다**. syndication 이 막히면 "반응" 축이
+# 통째로 비는데, 그때 논평을 붙일 소재가 공지(회사 발표)만 남는다.
+# 2026-09-03 실측: 무인증 200, 레이트리밋 없음. X 는 같은 날 회전 대상 3개 전부 429.
+#
+# 커버리지는 X 보다 확실히 얇다. 검색으로 71개 계정을 훑어 "3일 내 게시 +
+# likes 20 이상"만 남긴 결과가 아래다. karpathy(1194일 전)·swyx(170일 전)·
+# Anthropic(0건)·HuggingFace(0건)은 Bluesky 에선 사실상 죽어 있어 뺐고,
+# Simon Willison·Ars Technica 는 이미 FEEDS 에 RSS 로 있어 중복이라 뺐다.
+BSKY_HANDLES = [
+    "danluu.com",            # 2026-09-03 실측: 0일 전 · likes 337
+    "404media.co",           # 0일 전 · likes 217 — 기술 저널리즘
+    "emollick.bsky.social",  # 0일 전 · likes 35  — AI 활용 논평
+    "tmlrorg.bsky.social",   # 2일 전 · likes 31  — ML 논문
+]
+BSKY_PER_RUN = 3
+BSKY_MIN_LIKES = 5   # X_MIN_FAVS(50)보다 낮다 — Bluesky 는 모집단 자체가 작다
+BSKY_URL = ("https://public.api.bsky.app/xrpc/app.bsky.feed.getAuthorFeed"
+            "?filter=posts_no_replies&limit=20&actor=")
+
+# LLM에 넘길 상한 — 토큰·비용 통제. 소스 수와 맞춰 둔다: interleave()는 소스별로
+# 1건씩 도는데 이 값이 소스 수보다 작으면 뒷 소스가 통째로 잘리고, 그러면 FEEDS
+# 끝에 있는 금융 축이 조용히 20% 아래로 떨어진다 (2026-08-28 실측으로 확인).
+MAX_ITEMS = 1 + REDDIT_PER_RUN + X_PER_RUN + BSKY_PER_RUN + len(FEEDS)
+
+
+def fetch(url: str, timeout: int = 20, ua: str = UA) -> bytes | None:
+    req = urllib.request.Request(url, headers={"User-Agent": ua})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             return r.read()
@@ -133,6 +211,86 @@ def parse_hn(raw: bytes) -> list[dict]:
                 "url": url,
             })
     return out
+
+
+def parse_x(raw: bytes, handle: str) -> list[dict]:
+    """X 공개 syndication(임베드 위젯 백엔드) 응답에서 최근 트윗만 뽑는다.
+
+    이 엔드포인트는 계정에 따라 최신 타임라인을 주기도 하고 몇 년 치 인기
+    트윗을 주기도 한다 (2026-08-28 실측: @OpenAI는 최신 20건, @karpathy는
+    중앙값 686일 전 100건). 날짜 필터가 없으면 2년 전 트윗이 오늘 다이제스트에
+    섞인다 — 그래서 X_MAX_AGE_DAYS가 옵션이 아니라 필수다.
+    """
+    m = re.search(rb'<script id="__NEXT_DATA__" type="application/json">(.*?)</script>',
+                  raw, re.S)
+    if not m:  # 429면 이 스크립트 태그가 아예 없다
+        return []
+    try:
+        entries = json.loads(m.group(1))["props"]["pageProps"]["timeline"]["entries"]
+    except Exception:
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=X_MAX_AGE_DAYS)
+    out = []
+    for e in entries:
+        tw = (e.get("content") or {}).get("tweet")
+        if not isinstance(tw, dict):
+            continue
+        try:
+            dt = datetime.strptime(tw["created_at"], "%a %b %d %H:%M:%S %z %Y")
+        except Exception:
+            continue
+        if dt < cutoff or tw.get("favorite_count", 0) < X_MIN_FAVS:
+            continue
+        text = tw.get("full_text") or tw.get("text") or ""
+        link = tw.get("permalink") or ""
+        if text and link:
+            out.append({"source": f"X @{handle}",
+                        "title": clean(text)[:200],
+                        "url": "https://x.com" + link})
+    return out[:PER_FEED]
+
+
+def parse_bsky(raw: bytes, handle: str) -> list[dict]:
+    """Bluesky public API(무인증) 응답에서 최근 게시물만 뽑는다.
+
+    getAuthorFeed 는 최신순이지만 고정글(pinned)이 맨 앞에 끼어들 수 있다 —
+    X 와 같은 이유로 날짜 필터가 필수다. 필터가 없으면 몇 달 전 고정글이
+    매일 다이제스트 맨 위에 실린다.
+    """
+    try:
+        feed = json.loads(raw)["feed"]
+    except Exception:
+        return []
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=X_MAX_AGE_DAYS)
+    out = []
+    for e in feed:
+        post = e.get("post") or {}
+        rec = post.get("record") or {}
+        try:
+            dt = datetime.fromisoformat(str(rec["createdAt"]).replace("Z", "+00:00"))
+        except Exception:
+            continue
+        if dt < cutoff or post.get("likeCount", 0) < BSKY_MIN_LIKES:
+            continue
+        text = rec.get("text") or ""
+        rkey = str(post.get("uri", "")).rsplit("/", 1)[-1]
+        if text and rkey:
+            out.append({"source": f"bsky @{handle}",
+                        "title": clean(text)[:200],
+                        "url": f"https://bsky.app/profile/{handle}/post/{rkey}"})
+    return out[:PER_FEED]
+
+
+def rotate(items: list, n: int, day: int) -> list:
+    """날짜로 창을 밀며 n개만 고른다. 레이트리밋 때문에 한 번에 다 못 긁으니
+    며칠에 걸쳐 전체를 도는 방식으로 커버리지를 확보한다."""
+    if not items or n <= 0:
+        return []
+    n = min(n, len(items))
+    start = (day * n) % len(items)
+    return [items[(start + k) % len(items)] for k in range(n)]
 
 
 def load_seen() -> list[str]:
@@ -235,6 +393,43 @@ def main() -> int:
     if raw:
         collected += parse_hn(raw)
 
+    # 레이트리밋 소스(Reddit·X)를 FEEDS보다 **먼저** 친다. 순서가 곧 우선순위다:
+    # interleave()는 소스별로 1건씩 도는데 소스 수(28+)가 MAX_ITEMS(25)보다 많아서
+    # 뒤에 수집된 소스는 상한에 걸려 통째로 빠진다. 실측으로 확인한 문제 —
+    # 뒤에 두면 Reddit·X가 다이제스트에 영영 안 실린다.
+    # 대신 밀려나는 건 FEEDS 맨 끝의 국내 소스다(해외 AI 중심으로 옮기는 게 목적).
+    # 여기서 실패해도 fetch()가 None을 주고 나머지 수집은 그대로 산다.
+    day = datetime.now(KST).timetuple().tm_yday
+    throttled = False
+    for sub in rotate(REDDIT_SUBS, REDDIT_PER_RUN, day):
+        if throttled:
+            time.sleep(THROTTLE_SEC)
+        throttled = True
+        print(f"수집: r/{sub}")
+        # .json은 403이지만 .rss는 200이다 (docs/crawling-plan.md §1-C).
+        # Reddit의 .rss는 표준 Atom이라 parse_feed를 그대로 쓴다.
+        raw = fetch(f"https://www.reddit.com/r/{sub}/top/.rss?t=day")
+        if raw:
+            collected += parse_feed(raw, f"r/{sub}")
+
+    for handle in rotate(X_HANDLES, X_PER_RUN, day):
+        if throttled:
+            time.sleep(THROTTLE_SEC)
+        throttled = True
+        print(f"수집: X @{handle}")
+        raw = fetch(X_URL + handle, ua=X_UA)
+        if raw:
+            collected += parse_x(raw, handle)
+
+    # Bluesky 는 레이트리밋이 없으므로 throttled 를 건드리지 않는다.
+    # X 바로 뒤에 두는 건 우선순위 때문이다 — 위 주석대로 순서가 곧 우선순위고,
+    # X 가 429 로 0건이 되는 날 "반응" 축을 대신 채워야 하는 자리가 여기다.
+    for handle in rotate(BSKY_HANDLES, BSKY_PER_RUN, day):
+        print(f"수집: bsky @{handle}")
+        raw = fetch(BSKY_URL + handle)
+        if raw:
+            collected += parse_bsky(raw, handle)
+
     for name, url in FEEDS:
         print(f"수집: {name}")
         raw = fetch(url)
@@ -255,7 +450,13 @@ def main() -> int:
         print("신규 항목 없음 — 파일 생성 안 함")
         return 0
 
+    before = {it["source"].split(" (")[0] for it in fresh}
     fresh = interleave(fresh, MAX_ITEMS)
+    # 소스 수 > MAX_ITEMS면 뒷 소스가 통째로 잘린다. 조용히 자르면
+    # "전부 커버했다"로 읽히므로 무엇이 빠졌는지 남긴다.
+    dropped = before - {it["source"].split(" (")[0] for it in fresh}
+    if dropped:
+        print(f"상한({MAX_ITEMS})에 밀려 제외된 소스: {', '.join(sorted(dropped))}")
     today = datetime.now(KST).strftime("%Y-%m-%d")
     out = DIGEST_DIR / f"{today}.md"
     body = render(fresh, summarize(fresh))
@@ -303,6 +504,64 @@ def selftest() -> int:
 
     # 요약 줄 수가 안 맞으면 정렬이 어긋나므로 통째로 버려야 한다
     assert render(items[:2], None).count("- [ ]") == 2
+
+    # Reddit .rss는 표준 Atom — 전용 파서 없이 parse_feed가 먹어야 한다
+    reddit = b"""<feed xmlns="http://www.w3.org/2005/Atom">
+      <entry><title>NVIDIA acquires llama.cpp</title>
+        <link href="https://www.reddit.com/r/LocalLLaMA/comments/abc/x/"/></entry>
+    </feed>"""
+    assert parse_feed(reddit, "r/LocalLLaMA") == [{
+        "source": "r/LocalLLaMA", "title": "NVIDIA acquires llama.cpp",
+        "url": "https://www.reddit.com/r/LocalLLaMA/comments/abc/x/"}]
+
+    # X: 오래된 트윗이 통과하면 2년 전 글이 오늘 다이제스트에 실린다.
+    # 이 스크립트에서 제일 조용히 틀릴 수 있는 지점이라 양쪽 다 본다.
+    def x_page(days_ago: int, favs: int) -> bytes:
+        dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        tweet = {
+            "created_at": dt.strftime("%a %b %d %H:%M:%S %z %Y"),
+            "favorite_count": favs, "full_text": "GPT-6 is out",
+            "permalink": "/OpenAI/status/1",
+        }
+        payload = {"props": {"pageProps": {"timeline": {
+            "entries": [{"content": {"tweet": tweet}}]}}}}
+        return (b'<script id="__NEXT_DATA__" type="application/json">'
+                + json.dumps(payload).encode() + b"</script>")
+
+    assert len(parse_x(x_page(0, 500), "OpenAI")) == 1                    # 최신·인기 → 통과
+    assert parse_x(x_page(0, 500), "OpenAI")[0]["url"].startswith("https://x.com/")
+    assert parse_x(x_page(X_MAX_AGE_DAYS + 1, 9999), "OpenAI") == []      # 오래됨 → 탈락
+    assert parse_x(x_page(0, X_MIN_FAVS - 1), "OpenAI") == []             # 노이즈 → 탈락
+    assert parse_x(b"Rate limit exceeded", "OpenAI") == []                # 429 → 빈손
+
+    # Bluesky: 고정글(pinned)이 최신순 앞에 끼어들 수 있어 X와 같은 함정이 있다.
+    # 날짜 필터가 빠지면 몇 달 전 고정글이 매일 맨 위에 실린다.
+    def bsky_page(days_ago: int, likes: int) -> bytes:
+        dt = datetime.now(timezone.utc) - timedelta(days=days_ago)
+        return json.dumps({"feed": [{"post": {
+            "uri": "at://did:plc:abc/app.bsky.feed.post/3muk6m2n36o2t",
+            "likeCount": likes,
+            "record": {"text": "Claude Code 로 다이제스트 자동화",
+                       "createdAt": dt.isoformat().replace("+00:00", "Z")},
+        }}]}).encode()
+
+    got = parse_bsky(bsky_page(0, 100), "danluu.com")
+    assert len(got) == 1, got
+    assert got[0]["url"] == (
+        "https://bsky.app/profile/danluu.com/post/3muk6m2n36o2t"), got
+    assert got[0]["source"] == "bsky @danluu.com", got
+    assert parse_bsky(bsky_page(X_MAX_AGE_DAYS + 1, 999), "danluu.com") == []  # 오래됨
+    assert parse_bsky(bsky_page(0, BSKY_MIN_LIKES - 1), "danluu.com") == []    # 노이즈
+    assert parse_bsky(b"<html>502</html>", "danluu.com") == []                 # 비-JSON
+
+    # 회전: 하루하루 다른 창을 보되 목록 밖으로 나가지 않아야 한다
+    subs = ["a", "b", "c", "d", "e"]
+    assert rotate(subs, 2, 0) == ["a", "b"]
+    assert rotate(subs, 2, 1) == ["c", "d"]
+    assert rotate(subs, 2, 2) == ["e", "a"]        # 끝에서 앞으로 감김
+    assert set(rotate(subs, 9, 3)) == set(subs)    # n > 길이여도 초과하지 않음
+    assert rotate([], 2, 0) == []
+
     print("selftest ok")
     return 0
 

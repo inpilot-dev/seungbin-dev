@@ -1,0 +1,81 @@
+name: publish-threads
+
+# digest PR 이 **머지될 때만** 돈다. 머지가 곧 사람의 승인이고, 그 위에
+# publish_threads.py 가 "체크 + 논평" 게이트를 한 번 더 건다 (CAP-6).
+# 스케줄 트리거를 일부러 두지 않았다 — 사람 손을 거치지 않고 발행되는 경로를
+# 만들지 않는 게 이 파이프라인의 요점이다.
+#
+# ⚠️ 최초 1회 설정 (안 하면 이 워크플로는 조용히 아무것도 안 하고 성공한다):
+#   1. developers.facebook.com 에서 앱 생성 → **Development mode 유지**
+#      (본인 계정에만 올릴 거면 앱 심사 불필요)
+#   2. 본인 Threads 계정을 Threads tester 로 초대하고 수락
+#   3. 장기 토큰(60일) 발급 → Settings → Secrets → Actions 에 등록
+#      - THREADS_TOKEN
+#      - THREADS_USER_ID
+#   4. 토큰은 60일마다 만료된다. 갱신된 토큰을 Secret 에 되쓸 방법이 없어
+#      자동 갱신은 만들지 않았다 — 만료되면 이 워크플로가 실패로 알려준다.
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-threads
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # digest/* 브랜치에서 온 PR 이 실제로 머지됐을 때만. 닫기만 한 건 제외.
+    if: >
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'digest/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # .published.json 원장을 읽으려면 머지 결과 커밋이 필요하다
+          ref: main
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Self-check publisher
+        run: python scripts/publish_threads.py --selftest
+
+      - name: Resolve digest file
+        id: pick
+        env:
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+          # 브랜치명이 digest/YYYY-MM-DD 이므로 파일명이 그대로 나온다
+          DATE="${HEAD_REF#digest/}"
+          FILE="digest/${DATE}.md"
+          if [ ! -f "$FILE" ]; then
+            echo "::warning::$FILE 없음 — 발행 건너뜀"
+            echo "file=" >> "$GITHUB_OUTPUT"
+          else
+            echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 아래 두 스텝 모두 파일 경로를 env 로 받는다 — 브랜치명에서 파생된 값이라
+      # run 본문에 ${{ }} 로 끼워넣으면 스크립트 인젝션 경로가 된다.
+      - name: Dry run (무엇이 나갈지 로그에 먼저 남긴다)
+        if: steps.pick.outputs.file != ''
+        env:
+          DRY_RUN: "1"
+          DIGEST_FILE: ${{ steps.pick.outputs.file }}
+        run: python scripts/publish_threads.py "$DIGEST_FILE"
+
+      - name: Publish to Threads
+        if: steps.pick.outputs.file != ''
+        env:
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          DIGEST_FILE: ${{ steps.pick.outputs.file }}
+        run: python scripts/publish_threads.py "$DIGEST_FILE"
