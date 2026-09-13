@@ -1,0 +1,36 @@
+name: refresh-threads-token
+
+# Threads 장기 토큰은 60일 만료다. 주 1회 갱신해 Secret 에 되쓴다.
+# 갱신 조건: 토큰 나이 24h 이상·미만료 (docs/research-2026-09-10.md §4).
+#
+# ⚠️ GITHUB_TOKEN 으로는 Secret 을 쓸 수 없다. repo 스코프 PAT 를 GH_PAT 로 등록해야 한다.
+#    GH_PAT 가 없으면 이 워크플로는 갱신만 하고 되쓰기는 실패로 알린다 — 조용히 죽지 않는다.
+on:
+  schedule:
+    - cron: "0 19 * * 1" # 월요일 04:00 KST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Refresh and store
+        env:
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${THREADS_TOKEN:-}" ]; then echo "THREADS_TOKEN 없음 — 건너뜀"; exit 0; fi
+          RESP=$(curl -sf "https://graph.threads.net/refresh_access_token?grant_type=th_refresh_token&access_token=$THREADS_TOKEN")
+          NEW=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+          EXP=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["expires_in"]//86400)')
+          echo "갱신됨 — ${EXP}일 유효"
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_PAT 없음 — 새 토큰을 Secret 에 못 쓴다. 수동으로 THREADS_TOKEN 갱신 필요"; exit 1
+          fi
+          gh secret set THREADS_TOKEN --repo "$REPO" --body "$NEW"

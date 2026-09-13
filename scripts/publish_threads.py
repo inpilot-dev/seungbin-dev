@@ -94,20 +94,27 @@ def check_token(token: str) -> None:
         raise
 
 
-def publish(item: dict, user_id: str, token: str, dry: bool) -> str | None:
-    text = compose(item)
+def post_text(text: str, user_id: str, token: str, dry: bool,
+              reply_to: str | None = None) -> str | None:
+    """텍스트 한 건 발행. reply_to 를 주면 그 게시물의 답글 — 스레드 체인은 이걸 반복한다.
+    (컨테이너 → 30초 → publish. 답글은 24h 1,000건 한도로 게시 250건과 별도.)"""
     if dry:
-        print(f"[DRY] {len(text)}자\n{text}\n{'-' * 40}")
+        print(f"[DRY] {len(text)}자{' (reply)' if reply_to else ''}\n{text}\n{'-' * 40}")
         return "dry-run"
-
-    cid = _call(f"{user_id}/threads",
-                {"media_type": "TEXT", "text": text}, token)["id"]
+    params = {"media_type": "TEXT", "text": text}
+    if reply_to:
+        params["reply_to_id"] = reply_to
+    cid = _call(f"{user_id}/threads", params, token)["id"]
     # 여기서 안 기다리면 발행이 실패한다. 공식 문서 권장 30초.
     print(f"  컨테이너 {cid} 생성 — {SETTLE_SEC}초 대기")
     time.sleep(SETTLE_SEC)
     pid = _call(f"{user_id}/threads_publish", {"creation_id": cid}, token)["id"]
     print(f"  발행됨: {pid}")
     return pid
+
+
+def publish(item: dict, user_id: str, token: str, dry: bool) -> str | None:
+    return post_text(compose(item), user_id, token, dry)
 
 
 def load_ledger() -> set[str]:

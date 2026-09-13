@@ -39,3 +39,6 @@ quitting-corporate-to-solopreneur/
 
 # python
 __pycache__/
+
+# 영상 편집 산출물 (수백 MB)
+out/
