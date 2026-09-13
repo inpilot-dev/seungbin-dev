@@ -247,7 +247,8 @@ def parse_x(raw: bytes, handle: str) -> list[dict]:
         if text and link:
             out.append({"source": f"X @{handle}",
                         "title": clean(text)[:200],
-                        "url": "https://x.com" + link})
+                        "url": "https://x.com" + link,
+                        "favs": tw.get("favorite_count", 0)})
     return out[:PER_FEED]
 
 
@@ -279,7 +280,8 @@ def parse_bsky(raw: bytes, handle: str) -> list[dict]:
         if text and rkey:
             out.append({"source": f"bsky @{handle}",
                         "title": clean(text)[:200],
-                        "url": f"https://bsky.app/profile/{handle}/post/{rkey}"})
+                        "url": f"https://bsky.app/profile/{handle}/post/{rkey}",
+                        "favs": post.get("likeCount", 0)})
     return out[:PER_FEED]
 
 

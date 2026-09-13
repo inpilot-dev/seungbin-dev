@@ -1,0 +1,102 @@
+name: auto-post
+
+# 주제 + 출처 URL 을 주면 글을 생성·채점하고, 통과하면 PR 을 열어 바로 머지한다.
+# 그다음 그 글로 Threads 초안을 만들어 채점 통과 시 발행한다.
+#
+# 게이트는 사람이 아니라 scripts/grade.py 다 — 결정론 검사(말투 7금지 + 지어낸 수치 대조)
+# + LLM 이진 판정. 둘 다 통과 못 하면 drafts/ 에만 남고 아무것도 나가지 않는다.
+#
+# GITHUB_TOKEN 으로 만든 PR 은 pull_request 워크플로를 트리거하지 않는다
+# (docs/research-2026-09-10.md §3). 그래서 채점·머지를 이 job 안에서 끝낸다.
+#
+# ⚠️ 최초 1회: CLAUDE_CODE_OAUTH_TOKEN(필수) · THREADS_TOKEN/THREADS_USER_ID(없으면 DRY_RUN)
+on:
+  # 수요일 09:00 KST — 주제를 안 주면 최신 다이제스트 1번 항목으로 쓴다 (--from-digest 1)
+  schedule:
+    - cron: "0 0 * * 3"
+  workflow_dispatch:
+    inputs:
+      topic:
+        description: "글 주제 한 줄 (비우면 최신 다이제스트 1번 항목)"
+        required: false
+        type: string
+      sources:
+        description: "출처 URL 또는 repo 내 파일 경로, 공백으로 구분"
+        required: false
+        type: string
+      merge:
+        description: "채점 통과 시 즉시 머지"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-post
+  cancel-in-progress: false
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      - name: Self-check
+        run: |
+          python scripts/grade.py --selftest
+          python scripts/write_post.py --selftest
+          python scripts/write_thread.py --selftest
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # 주제를 안 줬을 때: 다이제스트 PR 이 아직 안 머지됐어도 최신 digest/* 브랜치의 파일로 고른다.
+      - name: Fetch latest digest branch
+        if: inputs.topic == ''
+        run: |
+          set -euo pipefail
+          git fetch origin 'refs/heads/digest/*:refs/remotes/origin/digest/*' || true
+          LATEST=$(git for-each-ref --sort=-committerdate --format='%(refname:short)' 'refs/remotes/origin/digest/*' | head -1 || true)
+          if [ -n "$LATEST" ]; then
+            git checkout "$LATEST" -- digest/ && git reset -q digest/
+            echo "다이제스트 브랜치 $LATEST 에서 digest/ 가져옴"
+          fi
+
+      - name: Write, grade, publish post
+        id: post
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          TOPIC: ${{ inputs.topic }}
+          SOURCES: ${{ inputs.sources }}
+          MERGE: ${{ inputs.merge != false }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          ARGS=()
+          if [ -n "${TOPIC:-}" ]; then
+            ARGS+=(--topic "$TOPIC")
+            for s in $SOURCES; do ARGS+=(--source "$s"); done
+          else
+            ARGS+=(--from-digest 1)
+          fi
+          [ "$MERGE" = "true" ] && ARGS+=(--merge)
+          python scripts/write_post.py "${ARGS[@]}" --publish | tee out.txt
+          SLUG=$(grep -o 'content/[^ ]*\.mdx' out.txt | head -1 || true)
+          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+
+      - name: Thread from post
+        if: steps.post.outputs.slug != ''
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          SLUG: ${{ steps.post.outputs.slug }}
+        run: python scripts/write_thread.py --post "$SLUG" --publish
