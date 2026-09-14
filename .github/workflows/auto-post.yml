@@ -9,7 +9,7 @@ name: auto-post
 # GITHUB_TOKEN 으로 만든 PR 은 pull_request 워크플로를 트리거하지 않는다
 # (docs/research-2026-09-10.md §3). 그래서 채점·머지를 이 job 안에서 끝낸다.
 #
-# ⚠️ 최초 1회: CLAUDE_CODE_OAUTH_TOKEN(필수) · THREADS_TOKEN/THREADS_USER_ID(없으면 DRY_RUN)
+# ⚠️ 최초 1회: CLAUDE_CODE_OAUTH_TOKEN(필수) · THREADS_TOKEN(없으면 DRY_RUN)
 on:
   # 수요일 09:00 KST — 주제를 안 주면 최신 다이제스트 1번 항목으로 쓴다 (--from-digest 1)
   schedule:
@@ -97,6 +97,5 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
-          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           SLUG: ${{ steps.post.outputs.slug }}
         run: python scripts/write_thread.py --post "$SLUG" --publish

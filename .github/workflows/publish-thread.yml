@@ -43,7 +43,6 @@ jobs:
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
-          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           POST: ${{ inputs.post }}
           DRAFT: ${{ inputs.draft }}

@@ -17,7 +17,8 @@ CAP-6("기계 요약만으로는 올리지 않는다")을 사람 기억이 아�
 
 환경변수:
   THREADS_TOKEN    장기 액세스 토큰 (60일 만료). 없으면 아무것도 안 하고 0 으로 끝난다.
-  THREADS_USER_ID  Threads 사용자 ID
+  (THREADS_USER_ID 는 더 이상 안 쓴다 — 경로에 `me` 를 쓰면 토큰 주인으로 풀린다.
+   2026-09-14: 손으로 넣은 id 가 토큰 주인과 달라 400 "Object with ID does not exist" 가 났다.)
   DRY_RUN=1        네트워크 호출 없이 무엇을 올릴지만 출력
 
 사용:
@@ -149,10 +150,10 @@ def main(argv: list[str]) -> int:
 
     dry = os.environ.get("DRY_RUN") == "1"
     token = os.environ.get("THREADS_TOKEN", "")
-    user_id = os.environ.get("THREADS_USER_ID", "")
-    if not dry and not (token and user_id):
+    user_id = "me"   # 토큰 주인. 별도 id Secret 불필요
+    if not dry and not token:
         # 실패가 아니다. 토큰을 아직 안 붙였을 뿐이므로 수집 파이프라인을 안 깬다.
-        print("THREADS_TOKEN/THREADS_USER_ID 없음 — 발행 건너뜀", file=sys.stderr)
+        print("THREADS_TOKEN 없음 — 발행 건너뜀", file=sys.stderr)
         return 0
     if not dry:
         check_token(token)
