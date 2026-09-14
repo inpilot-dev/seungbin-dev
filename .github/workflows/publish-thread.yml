@@ -1,0 +1,55 @@
+name: publish-thread
+
+# 기존 글 하나로 Threads 스레드만 만들어 발행한다 (수동). auto-post 와 달리 새 글을 만들지 않는다.
+# 용도: 토큰 검증 · 예전 글 재발행 · 채점 탈락한 스레드 재시도.
+# 게이트는 같다 — scripts/grade.py 를 통과한 초안만 나간다. DRY_RUN=1 이면 무엇이 나갈지만 로그에 찍는다.
+on:
+  workflow_dispatch:
+    inputs:
+      post:
+        description: "content/*.mdx 경로"
+        required: true
+        type: string
+      dry_run:
+        description: "발행 없이 초안·채점만"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: publish-thread
+  cancel-in-progress: false
+
+jobs:
+  thread:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Self-check
+        run: python scripts/write_thread.py --selftest && python scripts/grade.py --selftest
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+      - name: Write, grade, publish thread
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+          POST: ${{ inputs.post }}
+        run: |
+          set -euo pipefail
+          [ -f "$POST" ] || { echo "::error::$POST 없음"; exit 1; }
+          python scripts/write_thread.py --post "$POST" --publish
+      - name: Keep draft
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: thread-draft
+          path: drafts/threads/
+          if-no-files-found: ignore
