@@ -77,8 +77,13 @@ def _call(path: str, params: dict, token: str, method: str = "POST") -> dict:
             f"{API}/{path}", data=urllib.parse.urlencode(params).encode(), method="POST")
     else:
         req = urllib.request.Request(f"{API}/{path}?{urllib.parse.urlencode(params)}")
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read())
+    try:
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return json.loads(r.read())
+    except urllib.error.HTTPError as e:
+        # Threads 는 400 에 원인을 JSON 으로 준다 (예: text 길이·권한). 본문 없이는 디버깅이 안 된다.
+        body = e.read().decode("utf-8", "ignore")[:500]
+        raise RuntimeError(f"Threads API {path} → HTTP {e.code}: {body}") from None
 
 
 def check_token(token: str) -> None:
