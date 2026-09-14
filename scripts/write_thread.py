@@ -31,7 +31,7 @@ import publish_threads as pt  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "drafts" / "threads"
 VOICE = ROOT / "docs" / "voice.md"
-MAX_LEN, MAX_PARTS, MAX_TRIES = pt.MAX_LEN, 3, 2
+MAX_LEN, MAX_PARTS, MAX_TRIES = pt.MAX_LEN, 3, 3   # 2026-09-14: 2회로는 통과율이 1/3 이라 3회
 GEN_MODEL = "claude-sonnet-5"
 SEP = "\n---\n"   # LLM 이 체인을 나누는 구분자
 
