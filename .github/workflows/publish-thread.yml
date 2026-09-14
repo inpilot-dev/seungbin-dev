@@ -14,6 +14,15 @@ on:
         description: "drafts/threads/*.md — 통과한 초안을 재생성 없이 발행"
         required: false
         type: string
+      reply_to:
+        description: "(draft 전용) 이 게시물 ID 의 답글로 시작 — 끊긴 체인 이어붙이기"
+        required: false
+        type: string
+      start:
+        description: "(draft 전용) N번째 글부터"
+        required: false
+        type: string
+        default: "1"
       dry_run:
         description: "발행 없이 초안·채점만"
         type: boolean
@@ -46,11 +55,14 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           POST: ${{ inputs.post }}
           DRAFT: ${{ inputs.draft }}
+          REPLY_TO: ${{ inputs.reply_to }}
+          START: ${{ inputs.start || '1' }}
         run: |
           set -euo pipefail
           if [ -n "${DRAFT:-}" ]; then
             [ -f "$DRAFT" ] || { echo "::error::$DRAFT 없음"; exit 1; }
-            python scripts/write_thread.py --draft "$DRAFT" --publish
+            EXTRA=(--start "$START"); [ -n "${REPLY_TO:-}" ] && EXTRA+=(--reply-to "$REPLY_TO")
+            python scripts/write_thread.py --draft "$DRAFT" --publish "${EXTRA[@]}"
           else
             [ -f "$POST" ] || { echo "::error::$POST 없음"; exit 1; }
             python scripts/write_thread.py --post "$POST" --publish

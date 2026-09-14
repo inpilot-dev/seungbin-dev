@@ -40,6 +40,8 @@ from pathlib import Path
 API = "https://graph.threads.net/v1.0"
 MAX_LEN = 500          # Threads 텍스트 상한
 SETTLE_SEC = 30        # 컨테이너 생성 → 발행 사이 권장 대기. 줄이면 조용히 실패한다
+REPLY_SETTLE_SEC = 15  # 발행 → 그 글에 답글 컨테이너 생성 사이 대기 (없으면 500)
+RETRY_500, RETRY_WAIT_SEC = 3, 20
 EXPIRY_WARN_DAYS = 14  # 토큰 만료가 이보다 가까우면 경고
 LEDGER = Path(__file__).resolve().parent.parent / "digest" / ".published.json"
 
@@ -110,13 +112,32 @@ def post_text(text: str, user_id: str, token: str, dry: bool,
     params = {"media_type": "TEXT", "text": text}
     if reply_to:
         params["reply_to_id"] = reply_to
-    cid = _call(f"{user_id}/threads", params, token)["id"]
+        # 방금 발행한 글에 바로 답글 컨테이너를 만들면 본문 없는 500 이 난다 (2026-09-14 실측).
+        # 발행 직후 글이 아직 답글 대상으로 안 잡히는 것으로 보여 잠깐 기다리고, 500 은 재시도한다.
+        time.sleep(REPLY_SETTLE_SEC)
+    cid = None
+    for attempt in range(1, RETRY_500 + 1):
+        try:
+            cid = _call(f"{user_id}/threads", params, token)["id"]
+            break
+        except RuntimeError as e:
+            if "HTTP 500" not in str(e) or attempt == RETRY_500:
+                raise
+            print(f"  500 — {attempt}/{RETRY_500} 재시도, {RETRY_WAIT_SEC}초 뒤", file=sys.stderr)
+            time.sleep(RETRY_WAIT_SEC)
     # 여기서 안 기다리면 발행이 실패한다. 공식 문서 권장 30초.
     print(f"  컨테이너 {cid} 생성 — {SETTLE_SEC}초 대기")
     time.sleep(SETTLE_SEC)
     pid = _call(f"{user_id}/threads_publish", {"creation_id": cid}, token)["id"]
     print(f"  발행됨: {pid}")
     return pid
+
+
+def permalink(post_id: str, token: str) -> str:
+    try:
+        return _call(post_id, {"fields": "permalink"}, token, method="GET").get("permalink", "")
+    except Exception:
+        return ""
 
 
 def publish(item: dict, user_id: str, token: str, dry: bool) -> str | None:
