@@ -1,0 +1,70 @@
+name: review-result
+
+# n8n 검수 게이트의 답을 받는다 (docs/n8n-review-plan.md §2).
+# 승인 → PR 머지 + 스레드 발행 · 반려 → PR 닫기 + 사유 댓글.
+# n8n 은 repository_dispatch 만 쏘고, git 조작은 전부 여기서 GITHUB_TOKEN 으로 한다 —
+# n8n 쪽 PAT 에 머지 권한을 줄 이유가 없다.
+#
+# 이 워크플로는 REVIEW_WEBHOOK_URL Secret 이 없으면 아무 일도 안 일어난다 (아무도 dispatch 를 안 보낸다).
+on:
+  repository_dispatch:
+    types: [review-approved, review-rejected]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: review-result-${{ github.event.client_payload.pr }}
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Reject
+        if: github.event.action == 'review-rejected'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.client_payload.pr }}
+          REASON: ${{ github.event.client_payload.reason }}
+        run: |
+          set -euo pipefail
+          gh pr comment "$PR" --body "검수 반려: ${REASON:-사유 없음} (n8n review-gate)"
+          gh pr close "$PR" --delete-branch
+          echo "PR #$PR 닫음"
+
+      - name: Approve — merge
+        if: github.event.action == 'review-approved'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.client_payload.pr }}
+        run: |
+          set -euo pipefail
+          gh pr merge "$PR" --squash --delete-branch
+          git pull --ff-only origin main
+
+      - uses: actions/setup-python@v7
+        if: github.event.action == 'review-approved'
+        with:
+          python-version: "3.12"
+
+      - name: Install Claude Code CLI
+        if: github.event.action == 'review-approved'
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Approve — thread
+        if: github.event.action == 'review-approved'
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
+          SLUG: ${{ github.event.client_payload.slug }}
+        run: |
+          set -euo pipefail
+          FILE="content/${SLUG}.mdx"
+          [ -f "$FILE" ] || { echo "::warning::$FILE 없음 — 스레드 생략"; exit 0; }
+          python scripts/write_thread.py --post "$FILE" --publish || echo "::warning::스레드 채점 탈락 — 글만 발행됨"

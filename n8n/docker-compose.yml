@@ -1,0 +1,22 @@
+# n8n 로컬 검수 게이트 — 이 Mac 에서만 돈다. Mac 이 꺼지면 발행도 멈춘다 (계획서 §1).
+# 실행:  cd n8n && docker compose up -d   → http://localhost:5678
+# 중지:  docker compose down            (데이터는 ./data 에 남는다)
+services:
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      # Telegram 버튼이 여는 재개 URL 의 바탕. 폰에서 열려야 하므로 로컬 실행 시 아래 중 하나가 필요하다:
+      #   (a) 같은 Wi-Fi 에서 Mac 의 LAN IP 로 바꾼다 (예: http://192.168.0.10:5678)
+      #   (b) Tailscale/ngrok 으로 외부 URL 을 만든다
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=Asia/Seoul
+      - TZ=Asia/Seoul
+      - N8N_SECURE_COOKIE=false
+    volumes:
+      - ./data:/home/node/.n8n
+    restart: unless-stopped
