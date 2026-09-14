@@ -108,8 +108,15 @@ def publish_chain(parts: list[str], dry: bool, reply_to: str | None = None) -> l
     if not dry:
         pt.check_token(token)
     ids, prev = [], reply_to
-    for p in parts:
-        prev = pt.post_text(p, uid, token, dry, reply_to=prev)
+    for i, p in enumerate(parts):
+        try:
+            prev = pt.post_text(p, uid, token, dry, reply_to=prev)
+        except Exception as e:
+            # 앞부분은 이미 올라갔다. 어디서부터 이어야 하는지 명령으로 남긴다 — 중복 발행 방지.
+            print(f"체인 {i + 1}번째에서 실패: {e}", file=sys.stderr)
+            if prev:
+                print(f"이어붙이기: --draft <초안> --publish --reply-to {prev} --start {i + 1}", file=sys.stderr)
+            raise
         ids.append(prev or "")
     if ids and not dry:
         print("링크:", pt.permalink(reply_to or ids[0], token))
