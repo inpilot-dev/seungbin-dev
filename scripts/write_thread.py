@@ -98,17 +98,21 @@ def generate(title: str, source: str, url: str | None, use_llm_grade: bool = Tru
     return parts, ok, why
 
 
-def publish_chain(parts: list[str], dry: bool) -> list[str]:
+def publish_chain(parts: list[str], dry: bool, reply_to: str | None = None) -> list[str]:
+    """parts 를 순서대로 체인 발행. reply_to 를 주면 그 게시물의 답글로 시작한다 —
+    체인이 중간에 끊겼을 때 앞부분을 중복 발행하지 않고 이어 붙이는 용도."""
     token, uid = os.environ.get("THREADS_TOKEN", ""), "me"   # id 는 토큰이 안다
     if not dry and not token:
         print("THREADS_TOKEN 없음 — DRY_RUN 으로 전환", file=sys.stderr)
         dry = True
     if not dry:
         pt.check_token(token)
-    ids, prev = [], None
+    ids, prev = [], reply_to
     for p in parts:
         prev = pt.post_text(p, uid, token, dry, reply_to=prev)
         ids.append(prev or "")
+    if ids and not dry:
+        print("링크:", pt.permalink(reply_to or ids[0], token))
     return ids
 
 
@@ -121,6 +125,8 @@ def main(argv: list[str]) -> int:
     g.add_argument("--digest", help="digest/*.md")
     g.add_argument("--draft", help="drafts/threads/*.md — 이미 통과한 초안을 재생성 없이 발행")
     ap.add_argument("--pick", type=int, default=1)
+    ap.add_argument("--reply-to", default=None, help="이 게시물 ID 의 답글로 시작 (끊긴 체인 이어붙이기)")
+    ap.add_argument("--start", type=int, default=1, help="--draft 의 N번째 글부터 (1-based)")
     ap.add_argument("--publish", action="store_true")
     ap.add_argument("--no-llm-grade", action="store_true")
     a = ap.parse_args(argv[1:])
@@ -132,8 +138,9 @@ def main(argv: list[str]) -> int:
         if fails:
             print("FAIL (초안 결정론 검사)"); [print(f"  - {f}") for f in fails]
             return 1
+        parts = parts[a.start - 1:]
         if a.publish:
-            print("발행:", publish_chain(parts, dry=os.environ.get("DRY_RUN") == "1"))
+            print("발행:", publish_chain(parts, dry=os.environ.get("DRY_RUN") == "1", reply_to=a.reply_to))
         return 0
     if a.post:
         p = Path(a.post)
@@ -170,6 +177,7 @@ def selftest() -> int:
     # 토큰 없으면 DRY 로 떨어지고 체인 순서가 유지된다
     os.environ.pop("THREADS_TOKEN", None)
     assert publish_chain(["a", "b"], dry=False) == ["dry-run", "dry-run"]
+    assert publish_chain(["c"], dry=True, reply_to="123") == ["dry-run"]
     print("selftest ok")
     return 0
 
