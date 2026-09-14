@@ -105,6 +105,9 @@ def deterministic(kind: str, md: str, sources: list[str]) -> list[str]:
             fails.append("소제목(##) 없음")
         if re.search(r"^##.*\?\s*$", body, re.M):
             fails.append("소제목에 물음표 — voice.md 규칙 9")
+        cmd = meta.get("coverCmd", "")
+        if cmd and cmd not in body:
+            fails.append(f"coverCmd '{cmd[:40]}' 가 본문에 없다 — 지어낸 명령")
     else:  # thread
         if len(md) > THREAD_MAX:
             fails.append(f"{len(md)}자 > Threads 상한 {THREAD_MAX}")
@@ -127,7 +130,9 @@ def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
         "먼저 규칙 위반·어색한 문장·근거 없는 단정을 3줄 이내로 비평해라.\n"
         "그 다음 마지막 줄에 정확히 `VERDICT: PASS` 또는 `VERDICT: FAIL` 만 써라.\n"
         + ("PASS 기준: 규칙 1·2·3·4 를 지키고, '이 목소리가 아닌 것' 7개에 하나도 안 걸리며, "
-           "첫 문장이 결론이나 증상이고, 끝이 `> 한 줄 요약` 이다. 애매하면 FAIL.\n"
+           "첫 문장이 결론이나 증상이고, 끝이 `> 한 줄 요약` 이다. "
+           "그리고 글이 기술 블로그 주제(AI 워크플로우·자동화·백엔드·핀테크 시스템·개발자 도구)여야 한다 — "
+           "정치·사회 뉴스, 기업 인사, 지역 이슈를 다루면 문체가 좋아도 FAIL. 애매하면 FAIL.\n"
            if kind == "blog" else
            "PASS 기준: 규칙 1·2·3·4 를 지키고, '이 목소리가 아닌 것' 7개에 하나도 안 걸리며, "
            "첫 줄이 훅(결론·증상·수치·통념 뒤집기)이다. 스레드는 500자 글이라 "
@@ -189,6 +194,9 @@ tags: ["원장"]
 이거 하나 고쳤더니 정산 불일치가 월 12건에서 0건으로 떨어졌다. 나는 저장은 비우고 조회 계층에서 채운다로 갔다.
 """ + "테스트 문장이다. " * 60
     src = "정산 불일치 월 12건 → 0건"
+    # coverCmd 가 본문에 없으면 지어낸 명령이다
+    fake_cmd = good_blog.replace('tags: ["원장"]', 'tags: ["원장"]\ncoverCmd: "grep -c x log"')
+    assert any("coverCmd" in f for f in deterministic("blog", fake_cmd, [src]))
     assert deterministic("blog", good_blog, [src]) == [], deterministic("blog", good_blog, [src])
 
     bad = good_blog.replace("경위**다.", "경위**입니다! 여러분 🚀").replace("12건", "37건")
