@@ -1,0 +1,183 @@
+{
+  "name": "review-gate (발행 직전 검수)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "review-gate",
+        "responseMode": "onReceived",
+        "options": {}
+      },
+      "id": "a1",
+      "name": "PR 웹훅 수신",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "webhookId": "review-gate"
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_YOUR_CHAT_ID",
+        "text": "=📝 발행 대기\n\n*{{ $json.body.title }}*\n\n{{ $json.body.preview }}\n\nPR: {{ $json.body.pr_url }}\n48시간 안에 안 누르면 반려됩니다.",
+        "additionalFields": {
+          "parse_mode": "Markdown",
+          "disable_web_page_preview": true
+        },
+        "replyMarkup": "inlineKeyboard",
+        "inlineKeyboard": {
+          "rows": [
+            {
+              "row": {
+                "buttons": [
+                  {
+                    "text": "✅ 승인 — 머지·발행",
+                    "additionalFields": {
+                      "url": "={{ $execution.resumeUrl }}?decision=approve"
+                    }
+                  },
+                  {
+                    "text": "❌ 반려 — PR 닫기",
+                    "additionalFields": {
+                      "url": "={{ $execution.resumeUrl }}?decision=reject"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      },
+      "id": "a2",
+      "name": "Telegram 미리보기",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [240, 0],
+      "credentials": {
+        "telegramApi": {
+          "id": "REPLACE",
+          "name": "Telegram 봇"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resume": "webhook",
+        "httpMethod": "GET",
+        "limitWaitTime": true,
+        "resumeAmount": 48,
+        "resumeUnit": "hours",
+        "options": {}
+      },
+      "id": "a3",
+      "name": "승인 대기 (48h)",
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [480, 0],
+      "webhookId": "review-gate-wait"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "loose" },
+          "conditions": [
+            {
+              "id": "c1",
+              "leftValue": "={{ $json.query.decision }}",
+              "rightValue": "approve",
+              "operator": { "type": "string", "operation": "equals" }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "a4",
+      "name": "승인인가",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [720, 0]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/inpilot-dev/seungbin-dev/dispatches",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/vnd.github+json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ event_type: 'review-approved', client_payload: { pr: $('PR 웹훅 수신').item.json.body.pr, slug: $('PR 웹훅 수신').item.json.body.slug } }) }}",
+        "options": {}
+      },
+      "id": "a5",
+      "name": "GitHub: review-approved",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, -120],
+      "credentials": {
+        "githubApi": { "id": "REPLACE", "name": "GitHub PAT (repo)" }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.github.com/repos/inpilot-dev/seungbin-dev/dispatches",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "githubApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Accept", "value": "application/vnd.github+json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ event_type: 'review-rejected', client_payload: { pr: $('PR 웹훅 수신').item.json.body.pr, slug: $('PR 웹훅 수신').item.json.body.slug, reason: ($json.query && $json.query.decision) ? 'Telegram 반려' : '48시간 무응답' } }) }}",
+        "options": {}
+      },
+      "id": "a6",
+      "name": "GitHub: review-rejected",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [960, 120],
+      "credentials": {
+        "githubApi": { "id": "REPLACE", "name": "GitHub PAT (repo)" }
+      }
+    },
+    {
+      "parameters": {
+        "chatId": "REPLACE_WITH_YOUR_CHAT_ID",
+        "text": "={{ $('승인인가').item.json.query && $('승인인가').item.json.query.decision === 'approve' ? '✅ 머지·발행 요청 보냄' : '❌ 반려 처리 (PR 닫힘)' }} — {{ $('PR 웹훅 수신').item.json.body.slug }}",
+        "additionalFields": {}
+      },
+      "id": "a7",
+      "name": "Telegram 결과 알림",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "position": [1200, 0],
+      "credentials": {
+        "telegramApi": { "id": "REPLACE", "name": "Telegram 봇" }
+      }
+    }
+  ],
+  "connections": {
+    "PR 웹훅 수신": { "main": [[{ "node": "Telegram 미리보기", "type": "main", "index": 0 }]] },
+    "Telegram 미리보기": { "main": [[{ "node": "승인 대기 (48h)", "type": "main", "index": 0 }]] },
+    "승인 대기 (48h)": { "main": [[{ "node": "승인인가", "type": "main", "index": 0 }]] },
+    "승인인가": {
+      "main": [
+        [{ "node": "GitHub: review-approved", "type": "main", "index": 0 }],
+        [{ "node": "GitHub: review-rejected", "type": "main", "index": 0 }]
+      ]
+    },
+    "GitHub: review-approved": { "main": [[{ "node": "Telegram 결과 알림", "type": "main", "index": 0 }]] },
+    "GitHub: review-rejected": { "main": [[{ "node": "Telegram 결과 알림", "type": "main", "index": 0 }]] }
+  },
+  "settings": { "executionOrder": "v1", "timezone": "Asia/Seoul" },
+  "active": false
+}

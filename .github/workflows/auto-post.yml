@@ -76,6 +76,8 @@ jobs:
           TOPIC: ${{ inputs.topic }}
           SOURCES: ${{ inputs.sources }}
           MERGE: ${{ inputs.merge != false }}
+          # 이 Secret 이 있으면 머지 대신 n8n 검수로 보낸다 (docs/n8n-review-plan.md). 없으면 기존 자동 머지.
+          REVIEW_WEBHOOK_URL: ${{ secrets.REVIEW_WEBHOOK_URL }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -87,13 +89,36 @@ jobs:
           else
             ARGS+=(--from-digest 1)
           fi
+          if [ -n "${REVIEW_WEBHOOK_URL:-}" ]; then
+            MERGE=false   # 검수 게이트가 켜져 있으면 사람이 승인해야 머지된다
+          fi
           [ "$MERGE" = "true" ] && ARGS+=(--merge)
           python scripts/write_post.py "${ARGS[@]}" --publish | tee out.txt
           SLUG=$(grep -o 'content/[^ ]*\.mdx' out.txt | head -1 || true)
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          echo "merged=$MERGE" >> "$GITHUB_OUTPUT"
 
+          # 검수 게이트: PR 번호·제목·앞 300자를 n8n 으로. 실패해도 PR 은 이미 열려 있으니 워크플로는 안 깬다.
+          if [ -n "${REVIEW_WEBHOOK_URL:-}" ] && [ -n "$SLUG" ]; then
+            PR_URL=$(grep -o 'PR: https://[^ ]*' out.txt | head -1 | cut -d' ' -f2)
+            python3 - "$SLUG" "$PR_URL" <<'PY' > payload.json
+          import json, re, sys
+          slug, pr_url = sys.argv[1], sys.argv[2]
+          md = open(slug, encoding="utf-8").read()
+          m = re.match(r"^---\n(.*?)\n---\n(.*)$", md, re.S)
+          title = re.search(r'^title:\s*"(.*)"', m.group(1), re.M).group(1) if m else slug
+          body = re.sub(r"\s+", " ", m.group(2) if m else md).strip()[:300]
+          print(json.dumps({"pr": int(pr_url.rsplit("/", 1)[-1]), "pr_url": pr_url,
+                            "slug": slug.removeprefix("content/").removesuffix(".mdx"),
+                            "title": title, "preview": body}, ensure_ascii=False))
+          PY
+            curl -sf -X POST -H "Content-Type: application/json" --data @payload.json "$REVIEW_WEBHOOK_URL" \
+              && echo "검수 요청 보냄" || echo "::warning::검수 웹훅 실패 — PR 은 열려 있음, 수동 머지 필요"
+          fi
+
+      # 검수 게이트가 켜져 있으면 스레드는 review-result.yml 이 승인 뒤에 만든다.
       - name: Thread from post
-        if: steps.post.outputs.slug != ''
+        if: steps.post.outputs.slug != '' && steps.post.outputs.merged == 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
