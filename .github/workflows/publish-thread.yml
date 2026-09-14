@@ -7,8 +7,12 @@ on:
   workflow_dispatch:
     inputs:
       post:
-        description: "content/*.mdx 경로"
-        required: true
+        description: "content/*.mdx 경로 (draft 를 주면 무시)"
+        required: false
+        type: string
+      draft:
+        description: "drafts/threads/*.md — 통과한 초안을 재생성 없이 발행"
+        required: false
         type: string
       dry_run:
         description: "발행 없이 초안·채점만"
@@ -42,10 +46,16 @@ jobs:
           THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
           POST: ${{ inputs.post }}
+          DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
-          [ -f "$POST" ] || { echo "::error::$POST 없음"; exit 1; }
-          python scripts/write_thread.py --post "$POST" --publish
+          if [ -n "${DRAFT:-}" ]; then
+            [ -f "$DRAFT" ] || { echo "::error::$DRAFT 없음"; exit 1; }
+            python scripts/write_thread.py --draft "$DRAFT" --publish
+          else
+            [ -f "$POST" ] || { echo "::error::$POST 없음"; exit 1; }
+            python scripts/write_thread.py --post "$POST" --publish
+          fi
       - name: Keep draft
         if: always()
         uses: actions/upload-artifact@v4

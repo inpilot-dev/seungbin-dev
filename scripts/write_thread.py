@@ -119,11 +119,22 @@ def main(argv: list[str]) -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--post", help="content/*.mdx")
     g.add_argument("--digest", help="digest/*.md")
+    g.add_argument("--draft", help="drafts/threads/*.md — 이미 통과한 초안을 재생성 없이 발행")
     ap.add_argument("--pick", type=int, default=1)
     ap.add_argument("--publish", action="store_true")
     ap.add_argument("--no-llm-grade", action="store_true")
     a = ap.parse_args(argv[1:])
 
+    if a.draft:
+        parts = split_parts(Path(a.draft).read_text(encoding="utf-8"))
+        fails = [f"{i + 1}번 글: {w}" for i, p in enumerate(parts)
+                 for w in grade.deterministic("thread", p, [])]
+        if fails:
+            print("FAIL (초안 결정론 검사)"); [print(f"  - {f}") for f in fails]
+            return 1
+        if a.publish:
+            print("발행:", publish_chain(parts, dry=os.environ.get("DRY_RUN") == "1"))
+        return 0
     if a.post:
         p = Path(a.post)
         md = p.read_text(encoding="utf-8")
