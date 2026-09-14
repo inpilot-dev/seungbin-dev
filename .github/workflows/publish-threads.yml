@@ -11,7 +11,7 @@ name: publish-threads
 #   2. 본인 Threads 계정을 Threads tester 로 초대하고 수락
 #   3. 장기 토큰(60일) 발급 → Settings → Secrets → Actions 에 등록
 #      - THREADS_TOKEN
-#      - THREADS_USER_ID
+#      (THREADS_USER_ID 는 불필요 — 경로에 me 를 쓴다)
 #   4. 토큰은 60일마다 만료된다. 갱신된 토큰을 Secret 에 되쓸 방법이 없어
 #      자동 갱신은 만들지 않았다 — 만료되면 이 워크플로가 실패로 알려준다.
 on:
@@ -76,6 +76,5 @@ jobs:
         if: steps.pick.outputs.file != ''
         env:
           THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
-          THREADS_USER_ID: ${{ secrets.THREADS_USER_ID }}
           DIGEST_FILE: ${{ steps.pick.outputs.file }}
         run: python scripts/publish_threads.py "$DIGEST_FILE"

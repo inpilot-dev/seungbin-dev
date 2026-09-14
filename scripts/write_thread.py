@@ -8,7 +8,7 @@
 기존 publish_threads.py 의 게이트(체크+논평)는 사람이 논평을 쓰는 경로다. 이 스크립트는
 그 옆의 두 번째 경로다: **논평 대신 채점기가 게이트**다. 둘 다 "기계 요약 그대로 발행"은 못 한다.
 
-토큰(THREADS_TOKEN·THREADS_USER_ID)이 없으면 DRY_RUN 으로 무엇이 나갈지만 찍고 0 으로 끝난다.
+토큰(THREADS_TOKEN)이 없으면 DRY_RUN 으로 무엇이 나갈지만 찍고 0 으로 끝난다.
 
 사용:
   python3 scripts/write_thread.py --post content/foo.mdx
@@ -99,9 +99,9 @@ def generate(title: str, source: str, url: str | None, use_llm_grade: bool = Tru
 
 
 def publish_chain(parts: list[str], dry: bool) -> list[str]:
-    token, uid = os.environ.get("THREADS_TOKEN", ""), os.environ.get("THREADS_USER_ID", "")
-    if not dry and not (token and uid):
-        print("THREADS_TOKEN/THREADS_USER_ID 없음 — DRY_RUN 으로 전환", file=sys.stderr)
+    token, uid = os.environ.get("THREADS_TOKEN", ""), "me"   # id 는 토큰이 안다
+    if not dry and not token:
+        print("THREADS_TOKEN 없음 — DRY_RUN 으로 전환", file=sys.stderr)
         dry = True
     if not dry:
         pt.check_token(token)
