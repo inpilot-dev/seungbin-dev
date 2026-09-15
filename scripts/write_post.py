@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import html
+import json
 import re
 import subprocess
 import sys
@@ -78,20 +79,35 @@ def on_topic(titles: list[str]) -> list[bool]:
     return [got.get(str(i + 1)) == "YES" for i in range(len(titles))]
 
 
+def norm_url(u: str) -> str:
+    return u.split("#")[0].rstrip("/.,;:")
+
+
+def written_urls() -> set[str]:
+    """이미 글로 쓴 출처 URL 전부 — frontmatter 의 sources 와 본문 링크 둘 다."""
+    return {norm_url(u) for f in CONTENT.glob("*.mdx")
+            for u in re.findall(r"https?://[^\s\"'`<>)\]]+", f.read_text(encoding="utf-8"))}
+
+
 def pick_from_digest(pick: int = 1) -> tuple[str, list[str]]:
-    """가장 최근 digest/*.md 에서 **주제에 맞는** pick 번째 항목 → (주제, [URL]).
+    """가장 최근 digest/*.md 에서 **주제에 맞고 아직 안 쓴** pick 번째 항목 → (주제, [URL]).
 
     2026-09-14 실측: 적합성 없이 1번을 집으니 '미시간대 데이터센터 타운홀' 뉴스가 블로그에 실렸다.
+    2026-09-15 실측: 다이제스트는 매일 main 에서 새로 따서 전날 항목이 다시 올라온다(9/14치 36건 중
+    13건이 9/13과 같음). 이미 쓴 출처를 안 거르면 같은 글을 덮어쓰고 스레드도 한 번 더 나간다.
     """
+    done = written_urls()
     files = sorted(DIGEST_DIR.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
     for f in files:
         items = re.findall(r"^- \[[ x]\] \*\*(.+?)\*\*\n[ \t]*`[^`]*`[^\n]*?(https?://\S+)",
                            f.read_text(encoding="utf-8"), re.M)
         if not items:
             continue
-        ok = on_topic([t for t, _ in items])
-        fit = [(t, u) for (t, u), o in zip(items, ok) if o]
-        print(f"{f.name}: {len(items)}건 중 주제 적합 {len(fit)}건", file=sys.stderr)
+        fresh = [(t, u) for t, u in items if norm_url(u) not in done]
+        ok = on_topic([t for t, _ in fresh]) if fresh else []
+        fit = [(t, u) for (t, u), o in zip(fresh, ok) if o]
+        print(f"{f.name}: {len(items)}건 중 이미 쓴 출처 {len(items) - len(fresh)}건 제외, "
+              f"주제 적합 {len(fit)}건", file=sys.stderr)
         if len(fit) >= pick:
             title, url = fit[pick - 1]
             return title, [url]
@@ -238,6 +254,8 @@ def main(argv: list[str]) -> int:
 
     dest = (CONTENT if ok else DRAFTS) / f"{slug}.mdx"
     dest.parent.mkdir(exist_ok=True)
+    # 어떤 출처로 썼는지 frontmatter 에 남긴다 — LLM 이 본문에 URL 을 빠뜨려도 written_urls() 가 찾는다
+    mdx = mdx.replace("---\n", f"---\nsources: {json.dumps(a.source, ensure_ascii=False)}\n", 1)
     dest.write_text(mdx, encoding="utf-8")
     print(("PASS → " if ok else "FAIL → ") + str(dest.relative_to(ROOT)))
     for w in why:
@@ -252,15 +270,17 @@ def main(argv: list[str]) -> int:
 def selftest() -> int:
     assert slugify("X 크롤링은 되는가? — syndication 429") == "x-크롤링은-되는가-syndication-429"
     import tempfile
-    global DIGEST_DIR
-    DIGEST_DIR = Path(tempfile.mkdtemp())
-    (DIGEST_DIR / "x.md").write_text("- [ ] **첫 항목**\n      `bsky @a` · https://ex.com/1\n", encoding="utf-8")
+    global DIGEST_DIR, CONTENT
+    DIGEST_DIR, CONTENT = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
     global on_topic
-    on_topic = lambda titles: [t == "첫 항목" for t in titles]   # noqa: E731  LLM 없이 판정 흉내
+    on_topic = lambda titles: [t in ("첫 항목", "둘째 항목") for t in titles]   # noqa: E731  LLM 없이 판정 흉내
     (DIGEST_DIR / "x.md").write_text(
         "- [ ] **정치 뉴스**\n      `Techmeme` · https://ex.com/0\n\n"
-        "- [ ] **첫 항목**\n      `bsky @a` · https://ex.com/1\n", encoding="utf-8")
+        "- [ ] **첫 항목**\n      `bsky @a` · https://ex.com/1\n\n"
+        "- [ ] **둘째 항목**\n      `HN` · https://ex.com/2\n", encoding="utf-8")
     assert pick_from_digest(1) == ("첫 항목", ["https://ex.com/1"])   # 주제 밖 1번은 건너뛴다
+    (CONTENT / "old.mdx").write_text('---\nsources: ["https://ex.com/1/"]\n---\n본문\n', encoding="utf-8")
+    assert pick_from_digest(1) == ("둘째 항목", ["https://ex.com/2"])  # 이미 쓴 출처(끝 슬래시 달라도)는 건너뛴다
     assert html_to_text(b"<html><script>x()</script><p>Hi &amp; bye</p></html>") == "Hi & bye"
     wrapped = "여기 글입니다:\n```mdx\n---\ntitle: \"t\"\n---\n\n본문\n```\n"
     assert extract_mdx(wrapped) == "---\ntitle: \"t\"\n---\n\n본문\n", repr(extract_mdx(wrapped))
