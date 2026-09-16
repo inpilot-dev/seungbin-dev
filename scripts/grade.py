@@ -251,7 +251,10 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("draft")
     ap.add_argument("--kind", choices=["blog", "thread"], required=True)
-    ap.add_argument("--source", nargs="*", default=[])
+    # action="extend": `--source a --source b` 를 둘 다 받는다. nargs="*" 만 쓰면
+    # 뒤의 --source 가 앞의 것을 조용히 덮어써서, 원문 절반으로 채점하고도 통과한다.
+    # 2026-09-16에 실제로 당했다 — 원문에 있는 수치 6개가 "지어낸 숫자" 로 찍혔다.
+    ap.add_argument("--source", nargs="*", action="extend", default=[])
     ap.add_argument("--no-llm", action="store_true")
     a = ap.parse_args(argv[1:])
 
@@ -341,7 +344,7 @@ tags: ["원장"]
         # 판정 기준 규칙이 VIOLATIONS 에 적히면 VERDICT 가 PASS 라도 FAIL
         llm.ask = lambda *a, **k: "비평 세 줄.\nVIOLATIONS: 1, 5, 18\nVERDICT: PASS"
         ok, why = llm_verdict("blog", good_blog)
-        assert not ok and "판정 기준 규칙 위반" in why, why
+        assert not ok and "판정 기준 위반" in why, why
         # 없으면 통과. `none`·`없음` 둘 다 숫자가 없어 빈 집합이다
         for line in ("VIOLATIONS: none", "VIOLATIONS: 없음"):
             llm.ask = lambda *a, _l=line, **k: f"비평 세 줄.\n{_l}\nVERDICT: PASS"
