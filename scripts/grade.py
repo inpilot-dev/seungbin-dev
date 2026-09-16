@@ -10,7 +10,9 @@
   2) LLM 검사   — claude -p(Haiku) 에게 voice.md 20개 규칙으로 비평 먼저, 판정은 마지막 한 줄.
      claude 가 없으면 ollama(qwen2.5:7b)로 폴백. 둘 다 없으면 FAIL (열린 실패 금지).
 
-수치 대조(--source): 초안의 2자리 이상 숫자·%·배는 **단위까지 같은 꼴로** 원문에 있어야 한다.
+수치 대조(--source): 초안의 2자리 이상 숫자·%·배는 원문에 있어야 한다. 단위는 **충돌할 때만**
+신호다 — 같은 값을 초안은 시간 단위로, 원문은 세는 단위로 썼으면 다른 수치다. 한쪽에 단위가
+없으면 맨숫자로 비교한다.
 LLM 이 숫자를 지어내는 건 가장 흔하고 가장 치명적인 실패라 여기서 막는다.
 
 사용:
@@ -39,17 +41,16 @@ EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF☀-➿\U0001F900-\U0001F9FF]")
 NUM_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(%|배속|배|원|만|억|ms|초|분|시간|일|건|개|명)?")
 # 세는 단위는 서로 바꿔 써도 같은 수라 한 묶음으로 본다 — 원문 "12건" 초안 "12개" 는 정상이다.
 # ponytail: 세는 단위만 묶는다. 시간·돈·비율·배는 안 묶는다 (50ms 와 50건 은 다른 수치다).
+# 단위 목록에 없는 꼬리(회·번·곳·줄·토큰…)는 단위 없음으로 본다 — 목록을 늘리면 그만큼
+# 충돌 판정이 늘어 정상 초안이 막힌다. 늘리려면 "그 단위와 충돌하는 다른 단위"가 있을 때만.
 SAME_UNIT = {"건": "개", "명": "개"}
 # 비평 본문이 규칙 위반을 가리키는 표현. "규칙 3은 잘 지켰다" 같은 긍정 언급은 안 걸린다.
-# 2026-09-16 실제 비평은 지적 3개 중 "약하게 따른다" 하나만 걸렸다. 나머지 어휘는 그때
-# 로그를 보고 채웠다 — 새 표현이 보이면 여기 한 단어씩 늘리는 게 맞다.
-VIOLATION_RE = re.compile(
-    r"위반|위배|어긴|어겼|어긋|미준수|미흡|무시하|안 지켰|못 지켰|지키지 않|지켜지지 않"
-    r"|부합하지 않|놓쳤|놓치고|빠뜨|약하게 (?:따르|따름|따른|지)")
-# "규칙 위반 없음" / "위반은 아니다" 는 위반이 아니다
-NO_VIOLATION_RE = re.compile(r"(?:위반|위배)[^.\n]{0,8}?(?:없|아니)")
 # 스레드 프롬프트가 권장(3·4·6·20)·긴 글 전용(9~14)이라고 선언한 규칙은 FAIL 사유가 아니다
 THREAD_SOFT_RULES = {3, 4, 6, 9, 10, 11, 12, 13, 14, 20}
+ALL_RULES = set(range(1, 21))          # voice.md 규칙 20개
+# 프롬프트가 PASS 기준으로 **선언한 규칙만** FAIL 사유가 된다. 비평이 그 밖의 규칙을
+# 지적하는 건 참고지 탈락이 아니다 — 안 그러면 "비평이 전부 칭찬이어야 통과"가 된다.
+JUDGED_RULES = {"blog": {1, 2, 3, 4, 18}, "thread": ALL_RULES - THREAD_SOFT_RULES}
 
 
 def strip_code(md: str) -> str:
@@ -73,15 +74,15 @@ def split_front(md: str) -> tuple[dict, str]:
     return meta, m.group(2)
 
 
-def numbers(text: str) -> set[str]:
-    """비교용 숫자 집합. '값+단위' 한 덩어리로 담는다 — 단위를 지우면 50ms 가 50건 으로 통과한다.
+def numbers(text: str) -> set[tuple[str, str]]:
+    """비교용 (값, 단위) 집합. 단위는 값이 같을 때 충돌을 보는 용도지 일치 조건이 아니다.
     쉼표·공백 제거. 1자리 숫자는 뺀다 (목록 번호·'1개' 같은 건 지어낸 게 아니다)."""
     out = set()
     for val, unit in NUM_RE.findall(text):
         val = re.sub(r"[,\s]", "", val)
         if len(re.sub(r"\D", "", val)) < 2 and unit != "%":
             continue
-        out.add(val + SAME_UNIT.get(unit, unit))
+        out.add((val, SAME_UNIT.get(unit, unit)))
     return out
 
 
@@ -128,36 +129,51 @@ def deterministic(kind: str, md: str, sources: list[str]) -> list[str]:
             fails.append(f"{len(md)}자 > Threads 상한 {THREAD_MAX}")
 
     if sources:
-        # 원문도 초안과 같은 전처리를 거친다. 날것으로 두면 URL·타임스탬프·ID 에 박힌
-        # 2자리 숫자가 건초더미가 돼서 지어낸 2자리 수치가 전부 통과한다.
-        src_nums = numbers(strip_code(" ".join(sources)))
-        # 단위까지 같아야 한다. 단 원문에 단위 없이 맨숫자로 있으면(영문 "27 minutes" 등)
-        # 초안이 붙인 단위는 따지지 않는다 — 여기까지 막으면 번역된 원문이 전부 막힌다.
-        made_up = sorted(n for n in numbers(prose)
-                         if n not in src_nums and re.sub(r"[^\d.]+$", "", n) not in src_nums)
-        # 연도는 오늘 날짜에서 정당하게 나올 수 있어 예외 — 단위 없는 진짜 연도 범위만
+        # 원문에서는 URL 만 뺀다. URL 안 2자리 숫자는 건초더미라 지어낸 수치를 통과시키지만,
+        # 코드블록·백틱은 명령 출력·설정값이 사는 자리다 — write_thread.py --post 는 .mdx
+        # 전문을 원문으로 넘기므로 여기를 지우면 근거가 통째로 사라져 정상 초안이 막힌다.
+        src_units: dict[str, set[str]] = {}
+        for val, unit in numbers(re.sub(r"https?://\S+", " ", " ".join(sources))):
+            src_units.setdefault(val, set()).add(unit)
         yr = date.today().year
-        made_up = [n for n in made_up
-                   if not (n.isdigit() and len(n) == 4 and 2000 <= int(n) <= yr + 1)]
+        years = set(re.findall(r"(\d{4})\s*년", prose))
+        made_up = []
+        for val, unit in sorted(numbers(prose)):
+            units = src_units.get(val)
+            # 값이 원문에 있고, 한쪽에 단위가 없거나 단위가 같으면 통과.
+            # 둘 다 단위가 있고 다를 때만 다른 수치로 본다 (초안 50ms vs 원문 50건).
+            if units is not None and (unit == "" or "" in units or unit in units):
+                continue
+            # 연도는 오늘 날짜에서, "2030년" 같은 미래 연도는 계획 문장에서 정당하게 나온다
+            if val.isdigit() and len(val) == 4 and (2000 <= int(val) <= yr + 1 or val in years):
+                continue
+            made_up.append(val + unit)
         if made_up:
             fails.append(f"원문에 없는 수치 {made_up[:6]} — 지어낸 숫자")
     return fails
 
 
-def critique_violations(kind: str, out: str) -> list[str]:
-    """비평 본문에 적힌 규칙 위반을 줍는다. 마지막 VERDICT 줄과 무관하게 본다."""
-    hits = []
-    for seg in re.split(r"[.\n,]", out):
-        if "규칙" not in seg and "금지" not in seg:
-            continue
-        if not VIOLATION_RE.search(seg) or NO_VIOLATION_RE.search(seg):
-            continue
-        nums = {int(n) for n in re.findall(r"\d+", seg)}
-        # 스레드는 권장 규칙만 언급된 비평이면 넘어간다 (프롬프트가 FAIL 사유로 안 삼는다고 선언)
-        if kind == "thread" and nums and nums <= THREAD_SOFT_RULES:
-            continue
-        hits.append(seg.strip())
-    return hits
+def critique_violations(kind: str, out: str) -> list[int]:
+    """`VIOLATIONS:` 줄의 규칙 번호 중 이 종류의 PASS 기준에 해당하는 것.
+
+    2026-09-16 아침: 비평 마지막 줄(VERDICT)만 보다가, 본문에 위반이 적혀도 PASS 면
+    통과하는 구멍을 발견했다.
+    2026-09-16 밤: 그걸 비평 **산문을 정규식으로 훑어** 막았더니 한국어 부정을 못 읽어
+    "어떤 규칙도 위반하지 않았다" 를 위반으로 셌다. 정상 비평 14개 중 5개가 오탐이었다.
+    블로그는 권장 규칙 예외도 없어서 규칙 번호를 언급한 어떤 지적도 FAIL 이었다 —
+    "비평이 전부 칭찬이어야 통과" 가 된 셈이고, 주 1회 무인 경로가 몇 주 막힐 수 있었다.
+
+    그래서 산문을 더 잘 파싱하는 대신 판정 모델에게 **줄 하나를 더** 받는다.
+    한국어 부정을 정규식으로 맞히려 들지 않는다 — 그 싸움은 이길 수 없다.
+    """
+    m = re.search(r"VIOLATIONS:\s*([^\n]*)", out)
+    if not m:
+        # 형식을 안 지킨 경우. 여기서 FAIL 시키면 판정 모델이 줄을 빠뜨릴 때마다
+        # 모든 초안이 죽는다 — VERDICT 만 믿고 로그로 알린다.
+        print(f"grade[{kind}]: VIOLATIONS 줄 없음 — VERDICT 만 믿는다", file=sys.stderr)
+        return []
+    nums = {int(n) for n in re.findall(r"\d+", m.group(1))}
+    return sorted(nums & JUDGED_RULES.get(kind, ALL_RULES))
 
 
 def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
@@ -166,6 +182,7 @@ def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
     prompt = (
         "너는 발행 전 편집자다. 아래 '말투 규칙'을 기준으로 '초안'을 심사한다.\n"
         "먼저 규칙 위반·어색한 문장·근거 없는 단정을 3줄 이내로 비평해라.\n"
+        "그 다음 줄에 정확히 `VIOLATIONS: <위반한 규칙 번호를 쉼표로, 없으면 none>` 을 써라.\n"
         "그 다음 마지막 줄에 정확히 `VERDICT: PASS` 또는 `VERDICT: FAIL` 만 써라.\n"
         + ("PASS 기준: 규칙 1·2·3·4 를 지키고, '이 목소리가 아닌 것' 7개에 하나도 안 걸리며, "
            "첫 문장이 결론이나 증상이고, 끝이 `> 한 줄 요약` 이다. "
@@ -192,9 +209,8 @@ def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
         return False, "LLM 이 판정 줄을 내지 않음"
     hits = critique_violations(kind, out)
     if hits:
-        print(f"grade[{kind}]: VERDICT={m[-1]} 이지만 비평에 규칙 위반 명시 → FAIL: {hits[0][:80]}",
-              file=sys.stderr)
-        return False, out.strip() + f"\n  ↳ 비평에 적힌 위반: {' / '.join(hits)}"
+        print(f"grade[{kind}]: VERDICT={m[-1]} 이지만 판정 기준 규칙 {hits} 위반 → FAIL", file=sys.stderr)
+        return False, out.strip() + f"\n  ↳ 판정 기준 규칙 위반: {hits}"
     return m[-1] == "PASS", out.strip()
 
 
@@ -256,23 +272,40 @@ tags: ["원장"]
     coded = good_blog + "\n```py\nassert x != 99999  # 틀림!\n```\n"
     assert deterministic("blog", coded, [src]) == []
 
-    # 구멍1: "20 으로 시작하는 4자리" 전면 면제 — 연도가 아닌 20xx 는 잡는다
-    fake20 = good_blog.replace("월 12건에서 0건으로", "컨텍스트 2048 토큰에서 2500 TPS로")
-    assert any("2048" in f for f in deterministic("blog", fake20, [src])), deterministic("blog", fake20, [src])
-    # 진짜 연도는 여전히 면제 (오늘 날짜에서 정당하게 나온다)
-    assert deterministic("blog", good_blog.replace("월 12건", "2026년 기준 월 12건"), [src]) == []
+    # ── 수치 대조. 초안 한 문장을 갈아끼워 본다. 수치 외 사유는 걸러 이 검사만 남긴다.
+    SENT = "정산 불일치가 월 12건에서 0건으로 떨어졌다"
+    src12 = "정산 불일치가 월 12건에서 0건으로 줄었다"
 
-    # 구멍2: 원문도 strip_code — URL·코드에 박힌 숫자는 수치의 근거가 아니다
-    noisy = "참고: https://ex.com/2026/09/37-things 와 `timeout 37` 뿐이다"
-    assert any("37" in f for f in deterministic("blog", good_blog.replace("12건", "37건"), [noisy]))
+    def num_fails(frag: str, srcs: list[str]) -> list[str]:
+        draft = good_blog.replace(SENT, frag)
+        assert draft != good_blog, frag
+        return [f for f in deterministic("blog", draft, srcs) if "지어낸 숫자" in f]
 
-    # 구멍3: 단위·소수점을 지우면 50ms 가 50건 으로, 1.5배 가 15개 로 통과한다
-    assert any("50ms" in f for f in deterministic("blog", good_blog.replace("월 12건", "응답 50ms"), [src]))
-    assert any("1.5배" in f for f in deterministic("blog", good_blog.replace("월 12건", "1.5배"), ["15개 줄었다"]))
-    # 같은 수를 다른 세는 단위로 쓰는 건 정상 (12건 == 12개)
-    assert deterministic("blog", good_blog.replace("12건", "12개"), [src]) == []
-    # 원문이 단위 없는 맨숫자면(영문 "27 minutes") 초안이 붙인 단위는 안 따진다
-    assert deterministic("blog", good_blog.replace("월 12건", "27분"), ["처리에 27 minutes 걸렸다"]) == []
+    # 잡아야 하는 것 — 지어낸 수치. 단위는 **충돌할 때만** 신호다.
+    for frag, srcs, needle in [
+        ("컨텍스트 2048 토큰을 썼다", [src12], "2048"),      # 연도 아닌 20xx
+        ("2500 TPS 를 찍었다", [src12], "2500"),
+        ("응답이 50ms 였다", ["정산 50건이 밀렸다"], "50ms"),  # 값은 같고 단위가 충돌한다
+        ("1.5배 줄었다", ["15개 줄었다"], "1.5배"),           # 소수점을 지우면 15 로 통과한다
+        ("월 37건 터졌다", ["참고: https://ex.com/2026/09/37-things"], "37"),  # URL 안 숫자는 근거가 아니다
+    ]:
+        assert any(needle in f for f in num_fails(frag, srcs)), (frag, num_fails(frag, srcs))
+
+    # 통과해야 하는 것 — 과차단 회귀. 주 1회 무인 경로라 여기서 막히면 몇 주 조용히 멈춘다.
+    for frag, srcs in [
+        ("월 12 에서 0 으로 줄었다", [src12]),              # 초안이 단위를 생략했다
+        ("| 12 | 0 |", [src12]),                           # 마크다운 표 (strip_code 대상이 아니다)
+        ("월 12회 터졌다", [src12]),                        # 단위 목록에 없는 꼬리
+        ("월 12번 터졌다", [src12]),
+        ("월 12건 터졌다", [src12]),
+        ("월 12개 터졌다", [src12]),                        # 세는 단위끼리 (12건 == 12개)
+        ("2026년 기준 월 12건이다", [src12]),               # 오늘 날짜에서 나오는 연도
+        ("2030년까지 0건을 유지한다", [src12]),             # 미래 연도도 지어낸 수치가 아니다
+        ("처리에 27분 걸렸다", ["it took 27 minutes"]),     # 원문이 단위 없는 맨숫자
+        ("컨텍스트 4096 토큰을 썼다", ["설정:\n```py\nmax_tokens = 4096\n```"]),  # 원문 코드블록이 근거다
+        ("타임아웃 30초로 잡았다", ["기본은 `timeout 30` 이다"]),                  # 원문 인라인 백틱
+    ]:
+        assert num_fails(frag, srcs) == [], (frag, num_fails(frag, srcs))
 
     # Threads 상한
     assert any("상한" in f for f in deterministic("thread", "가" * 501, []))
@@ -284,32 +317,40 @@ tags: ["원장"]
     # 여기부터 LLM 판정 — llm.ask 를 가짜 응답으로 갈아끼워 네트워크 없이 돈다
     real_ask = llm.ask
     try:
-        # 결함1: 비평에 위반이 적혔으면 VERDICT 가 PASS 라도 FAIL
-        llm.ask = lambda *a, **k: "규칙 1 위반, 규칙 5 위반, 규칙 18을 약하게 따른다.\nVERDICT: PASS"
+        # 판정 기준 규칙이 VIOLATIONS 에 적히면 VERDICT 가 PASS 라도 FAIL
+        llm.ask = lambda *a, **k: "비평 세 줄.\nVIOLATIONS: 1, 5, 18\nVERDICT: PASS"
         ok, why = llm_verdict("blog", good_blog)
-        assert not ok and "비평에 적힌 위반" in why, why
-        # 2026-09-16 run 35047554531 의 비평 원문 그대로 — 이게 실제로 막혀야 할 회귀다
-        real = ('첫 문장이 판정이 아니라 현상 설명("~나왔다")이라 결론을 빠르게 드러내지 않는다 (규칙 1). '
-                '문장 전체에 볼드를 걸었는데, 규칙 5는 판정이 걸린 구절 하나만 강조하는 것이다. '
-                '명시적 1인칭이 거의 없어 규칙 18을 약하게 따르고 있다.\n\nVERDICT: PASS')
-        llm.ask = lambda *a, **k: real
-        assert not llm_verdict("blog", good_blog)[0]
-        # 같은 지적을 다른 어휘로 써도 잡힌다
-        for phrase in ("규칙 5와 어긋난다", "규칙 5에 부합하지 않는다", "규칙 2를 놓쳤다"):
-            llm.ask = lambda *a, **k: f"{phrase}.\nVERDICT: PASS"
-            assert not llm_verdict("blog", good_blog)[0], phrase
-        # 긍정 언급·위반 없음은 그대로 PASS (안 그러면 아무것도 통과 못 한다)
-        llm.ask = lambda *a, **k: "규칙 3은 잘 지켰다. 규칙 위반 없음.\nVERDICT: PASS"
-        assert llm_verdict("blog", good_blog)[0]
-        # 스레드에서 권장 규칙(6)만 지적한 비평은 FAIL 사유가 아니다 — 프롬프트와 같은 기준
-        llm.ask = lambda *a, **k: "규칙 6을 약하게 따른다.\nVERDICT: PASS"
-        assert llm_verdict("thread", "짧은 논평이다.")[0]
+        assert not ok and "판정 기준 규칙 위반" in why, why
+        # 없으면 통과. `none`·`없음` 둘 다 숫자가 없어 빈 집합이다
+        for line in ("VIOLATIONS: none", "VIOLATIONS: 없음"):
+            llm.ask = lambda *a, _l=line, **k: f"비평 세 줄.\n{_l}\nVERDICT: PASS"
+            assert llm_verdict("blog", good_blog)[0], line
 
-        # 결함2: 블로그 판정 프롬프트에 규칙 18(1인칭 선언) 기준이 들어 있다
+        # ── 2026-09-16 회귀: 비평 산문을 정규식으로 훑던 구현이 아래를 전부 위반으로 셌다.
+        # 정상 비평이 FAIL 나면 주 1회 무인 경로가 몇 주 막힌다. 이제 산문은 안 본다.
+        for prose in ("어떤 규칙도 위반하지 않았다", "규칙 위반은 발견되지 않았다",
+                      "규칙 2를 지키지 않은 곳은 없다", "규칙 위반을 찾으려 했으나 없었다",
+                      "말투 규칙을 위반하는 문장은 보이지 않는다"):
+            llm.ask = lambda *a, _p=prose, **k: f"{_p}\nVIOLATIONS: none\nVERDICT: PASS"
+            assert llm_verdict("blog", good_blog)[0], prose
+
+        # 블로그 PASS 기준(1·2·3·4·18) 밖의 규칙 지적은 참고지 탈락이 아니다
+        llm.ask = lambda *a, **k: "규칙 20(격언)을 놓쳤다.\nVIOLATIONS: 20\nVERDICT: PASS"
+        assert llm_verdict("blog", good_blog)[0]
+        # 스레드는 권장 규칙(3·4·6·20)·긴 글 규칙(9~14)이 FAIL 사유가 아니다
+        llm.ask = lambda *a, **k: "비평.\nVIOLATIONS: 6, 20\nVERDICT: PASS"
+        assert llm_verdict("thread", "짧은 논평이다.")[0]
+        llm.ask = lambda *a, **k: "비평.\nVIOLATIONS: 2\nVERDICT: PASS"
+        assert not llm_verdict("thread", "짧은 논평이다.")[0]
+        # 형식을 안 지키면 VERDICT 만 믿는다 — 여기서 죽으면 모든 초안이 막힌다
+        llm.ask = lambda *a, **k: "비평만 있고 목록이 없다.\nVERDICT: PASS"
+        assert llm_verdict("blog", good_blog)[0]
+
+        # 블로그 판정 프롬프트에 규칙 18(1인칭)과 VIOLATIONS 줄 요구가 들어 있다
         seen: list[str] = []
-        llm.ask = lambda p, **k: (seen.append(p), "VERDICT: PASS")[1]
+        llm.ask = lambda p, **k: (seen.append(p), "VIOLATIONS: none\nVERDICT: PASS")[1]
         llm_verdict("blog", good_blog)
-        assert "규칙 18" in seen[0] and "1인칭" in seen[0], seen[0][:300]
+        assert "규칙 18" in seen[0] and "1인칭" in seen[0] and "VIOLATIONS:" in seen[0], seen[0][:300]
     finally:
         llm.ask = real_ask
     print("selftest ok")
