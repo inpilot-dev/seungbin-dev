@@ -127,9 +127,20 @@ def deterministic(kind: str, md: str, sources: list[str]) -> list[str]:
             fails.append("소제목(##) 없음")
         if re.search(r"^##.*\?\s*$", body, re.M):
             fails.append("소제목에 물음표 — voice.md 규칙 9")
-        cmd = meta.get("coverCmd", "")
-        if cmd and cmd not in body:
-            fails.append(f"coverCmd '{cmd[:40]}' 가 본문에 없다 — 지어낸 명령")
+        # coverCmd 본문 대조는 2026-09-16에 뺐다. 측정 결과 정밀도가 ~3% 였다 —
+        # 사람이 쓴 41편 중 39편이 걸리는데 그중 실제로 지어낸 명령은 최대 1편이다.
+        # 이 검사가 재는 건 "사실인가" 가 아니라 "본문에서 리터럴로 복사했나" 다.
+        # 형식 차이만 봐주는 규칙으로 완화해도 41편 중 36편이 여전히 걸리고,
+        # 코퍼스를 통과시킬 만큼 풀면 진짜 가짜가 새기 시작한다(통과율과 검출력이 한 손잡이다).
+        # 게다가 생성 프롬프트가 참고로 넣는 REFS 두 편이 **둘 다 이 검사를 어긴다** —
+        # 모델은 규칙과 그 규칙을 어긴 예시를 같은 프롬프트에서 본다.
+        # 도입(#17) 이후 자동 생성 글을 막은 적은 없고, 관측된 효과는 "자동 글은
+        # coverCmd 를 아예 빼서 터미널 커버를 못 갖는다" 였다(#19).
+        #
+        # 언젠가 커버가 실제로 거짓말하는 사건이 나오면 고칠 자리는 여기가 아니라
+        # coverOut 이다. 검증 가능한 주장은 명령 문자열이 아니라 그 출력의 숫자고,
+        # `prose` 에 `meta.get("coverOut", "")` 을 붙이면 기존 수치 대조가 공짜로 잡는다.
+        # 그것도 새 과차단 표면이라 사건이 터진 뒤에 넣을 것.
     else:  # thread
         if len(md) > THREAD_MAX:
             fails.append(f"{len(md)}자 > Threads 상한 {THREAD_MAX}")
@@ -281,9 +292,9 @@ tags: ["원장"]
 이거 하나 고쳤더니 정산 불일치가 월 12건에서 0건으로 떨어졌다. 나는 저장은 비우고 조회 계층에서 채운다로 갔다.
 """ + "테스트 문장이다. " * 60
     src = "정산 불일치 월 12건 → 0건"
-    # coverCmd 가 본문에 없으면 지어낸 명령이다
+    # coverCmd 본문 대조는 뺐다 — 본문에 없는 명령을 걸어도 그 자체로는 FAIL 이 아니다
     fake_cmd = good_blog.replace('tags: ["원장"]', 'tags: ["원장"]\ncoverCmd: "grep -c x log"')
-    assert any("coverCmd" in f for f in deterministic("blog", fake_cmd, [src]))
+    assert not any("coverCmd" in f for f in deterministic("blog", fake_cmd, [src]))
     assert deterministic("blog", good_blog, [src]) == [], deterministic("blog", good_blog, [src])
 
     bad = good_blog.replace("경위**다.", "경위**입니다! 여러분 🚀").replace("12건", "37건")
