@@ -76,7 +76,13 @@ jobs:
           set -euo pipefail
           # .md 만 본다. 위에서 가져온 .seen.json 은 그것만으로는 푸시 사유가 아니다 —
           # 안 그러면 새 항목이 없는 날에도 원장 하나뿐인 브랜치가 생기고 prune 이 돈다.
-          if [ -z "$(git status --porcelain digest/ | grep -E '\.md$' || true)" ]; then
+          #
+          # -uall 이 필요하다: digest/ 가 통째로 untracked 면 git 은 파일이 아니라
+          # `?? digest/` 디렉터리 한 줄만 낸다. 그러면 .md 매치가 없어서 다이제스트를
+          # 멀쩡히 만들어 놓고 "신규 항목 없음" 으로 초록불이 된다. 지금은 main 에
+          # digest/x-2026-09-10.md 가 추적돼 있어 무사하지만, 그 파일이 지워지는 날
+          # 이 게이트는 영구히 침묵한다. 한 플래그로 그 의존을 끊는다.
+          if [ -z "$(git status --porcelain -uall digest/ | grep -E '\.md$' || true)" ]; then
             echo "신규 항목 없음 — 커밋 생략"
             exit 0
           fi
