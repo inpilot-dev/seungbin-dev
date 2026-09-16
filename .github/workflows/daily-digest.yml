@@ -1,14 +1,14 @@
 name: daily-digest
 
-# 매일 새벽 3시(KST) AI·개발 소식을 모아 다이제스트 PR을 연다.
-# PR이 곧 검수 게이트다 — 발행은 사람이 논평을 붙여서 직접 한다 (CAP-6).
+# 매일 새벽 3시(KST) AI·개발 소식을 모아 digest/<날짜> 브랜치에 커밋한다.
 #
-# ⚠️ 최초 1회 설정 필요:
-#   1. 로컬에서 `claude setup-token` 실행 → 나온 토큰을 Settings → Secrets →
-#      Actions 에 CLAUDE_CODE_OAUTH_TOKEN 으로 등록. 요약이 API 과금 없이
-#      Claude 구독으로 돈다. (없으면 요약만 생략되고 수집은 정상)
-#   2. Settings → Actions → General → "Allow GitHub Actions to create and
-#      approve pull requests" 켜기 — 기본값이 꺼짐이라 안 켜면 PR이 안 열린다
+# 2026-09-16: PR 생성을 멈췄다. "체크 + 논평" 수동 발행 경로는 한 번도 안 썼고
+# (실발행은 전부 auto-post 의 grade.py 경로) PR 만 7개 쌓였다. 브랜치는 남긴다 —
+# auto-post.yml 의 "Fetch latest digest branch" 가 이걸 읽어 주제를 고른다.
+#
+# ⚠️ 최초 1회 설정 필요: 로컬에서 `claude setup-token` 실행 → 나온 토큰을
+#    Settings → Secrets → Actions 에 CLAUDE_CODE_OAUTH_TOKEN 으로 등록.
+#    요약이 API 과금 없이 Claude 구독으로 돈다. (없으면 요약만 생략되고 수집은 정상)
 on:
   schedule:
     - cron: "0 18 * * *" # 18:00 UTC = 03:00 KST
@@ -16,7 +16,6 @@ on:
 
 permissions:
   contents: write
-  pull-requests: write
 
 concurrency:
   group: daily-digest
@@ -53,13 +52,13 @@ jobs:
           X_BEARER_TOKEN: ${{ secrets.X_BEARER_TOKEN }}
         run: python scripts/x_core.py
 
-      - name: Open PR
+      - name: Push digest branch
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           if [ -z "$(git status --porcelain digest/)" ]; then
-            echo "신규 항목 없음 — PR 생략"
+            echo "신규 항목 없음 — 커밋 생략"
             exit 0
           fi
           DATE=$(TZ=Asia/Seoul date +%F)
@@ -69,7 +68,21 @@ jobs:
           git checkout -b "$BRANCH"
           git add digest/
           git commit -m "chore(digest): $DATE 수집"
-          # force-push 안 함 — 사람이 PR에 붙인 논평을 날리지 않기 위해
           git push -u origin "$BRANCH"
-          gh pr create --title "digest: $DATE" --body \
-            "자동 수집. 발행할 항목에 체크하고 **논평 1줄**을 붙인 뒤 Threads에 올린다. 판정 지표는 발행까지 간 건수."
+
+      # ponytail: 브랜치가 유일한 저장소라 지우면 그날 수집은 사라진다.
+      # auto-post 는 최신 1개만 읽으므로 14일이면 충분하다. 더 길게 보관할 일이
+      # 생기면 CUTOFF 날짜만 바꾼다.
+      - name: Prune digest branches older than 14 days
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          CUTOFF="digest/$(TZ=Asia/Seoul date -d '14 days ago' +%F)"
+          gh api --paginate "repos/$GITHUB_REPOSITORY/branches" --jq '.[].name' \
+            | { grep '^digest/[0-9]' || true; } | awk -v c="$CUTOFF" '$0 < c' \
+            | while read -r b; do
+                echo "삭제: $b"
+                gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$b"
+              done
