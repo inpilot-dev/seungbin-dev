@@ -45,6 +45,15 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # auto-post 와 같은 이유 + 이쪽은 재실행이 **같은 입력을 그대로** 다시 돌린다.
+      # 앞선 시도가 체인 1번을 올리고 2번에서 죽었으면, 재실행은 1번부터 다시 올린다.
+      # 끊긴 체인의 복구는 재실행이 아니라 reply_to·start 를 넣은 **새 dispatch** 다.
+      - name: 재실행 거부 (중복 발행)
+        if: github.run_attempt != 1
+        run: |
+          echo "::error title=재실행 금지::재실행은 같은 입력으로 체인을 처음부터 다시 올린다. 끊긴 체인은 'Run workflow' 로 draft·reply_to(마지막으로 나간 게시물 ID)·start 를 넣어 이어 붙여라"
+          exit 1
+
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
