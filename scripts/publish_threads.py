@@ -145,9 +145,11 @@ def publish(item: dict, user_id: str, token: str, dry: bool) -> str | None:
 
 
 def load_ledger() -> set[str]:
+    """이미 발행한 항목. 파일이 없으면 빈 집합이 맞지만, **깨진 파일은 죽어야 한다** —
+    조용히 빈 집합을 돌려주면 이미 나간 항목이 전부 Threads 에 다시 나간다."""
     try:
         return set(json.loads(LEDGER.read_text()))
-    except Exception:
+    except FileNotFoundError:
         return set()
 
 

@@ -192,7 +192,9 @@ def main(argv: list[str]) -> int:
     handles = [h.strip().lstrip("@") for h in a.handles.split(",") if h.strip()]
 
     token = os.environ.get("X_BEARER_TOKEN", "")
-    items = collect_api(handles, token) if token else collect_fallback(handles)
+    # 토큰이 있어도 만료·쿼터 소진이면 0건이 온다. 그때 폴백을 안 타면 x-*.md 가
+    # 영영 안 생기고 워크플로는 continue-on-error 라 초록불이다 — 아무도 모른다.
+    items = (collect_api(handles, token) if token else []) or collect_fallback(handles)
     print(f"수집 {len(items)}건 ({'API v2' if token else 'syndication+bsky 폴백'})")
     if not items:
         print("수집 0건 — 파일 생성 안 함 (429 이면 내일 다른 핸들로 회전된다)")

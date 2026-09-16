@@ -35,6 +35,22 @@ jobs:
       - name: Self-check collector
         run: python scripts/collect_digest.py --selftest
 
+      # 중복 제거 원장(.seen.json)은 digest/<날짜> 브랜치에만 있고 그 브랜치는 머지되지
+      # 않는다. 안 가져오면 매 실행 원장이 비어 어제 항목이 다시 실린다(9/14치 36건 중
+      # 13건이 9/13과 동일했다). auto-post 의 "Fetch latest digest branch" 와 같은 패턴이다.
+      - name: Fetch dedup ledger
+        run: |
+          set -euo pipefail
+          git fetch origin 'refs/heads/digest/*:refs/remotes/origin/digest/*' || true
+          LATEST=$(git for-each-ref --sort=-committerdate --format='%(refname:short)' 'refs/remotes/origin/digest/*' | head -1 || true)
+          if [ -z "$LATEST" ]; then
+            echo "::warning title=원장 없음::digest 브랜치가 없다 — 전건을 신규로 본다"
+            exit 0
+          fi
+          git checkout "$LATEST" -- digest/.seen.json 2>/dev/null && git reset -q digest/ \
+            && echo "$LATEST 에서 .seen.json 가져옴 ($(python3 -c 'import json;print(len(json.load(open("digest/.seen.json"))))' )건)" \
+            || echo "::warning title=원장 없음::$LATEST 에 .seen.json 이 없다"
+
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
@@ -58,7 +74,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          if [ -z "$(git status --porcelain digest/)" ]; then
+          # .md 만 본다. 위에서 가져온 .seen.json 은 그것만으로는 푸시 사유가 아니다 —
+          # 안 그러면 새 항목이 없는 날에도 원장 하나뿐인 브랜치가 생기고 prune 이 돈다.
+          if [ -z "$(git status --porcelain digest/ | grep -E '\.md$' || true)" ]; then
             echo "신규 항목 없음 — 커밋 생략"
             exit 0
           fi

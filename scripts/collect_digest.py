@@ -296,12 +296,22 @@ def rotate(items: list, n: int, day: int) -> list:
 
 
 def load_seen() -> list[str]:
+    """이미 실은 URL 목록. 없으면 전건이 '신규' 가 되므로 조용히 넘어가지 않는다.
+
+    2026-09-16: 이 원장은 digest/<날짜> 브랜치에만 커밋되는데 그 브랜치는 이제
+    머지되지 않는다. CI 는 매번 새 체크아웃이라 원장이 늘 비어 있었고, 그래서
+    다이제스트가 매일 전날 항목을 다시 실었다(9/14치 36건 중 13건이 9/13과 동일).
+    워크플로가 최신 브랜치에서 이 파일을 가져오게 고쳤다 — 여기서는 없으면 알린다.
+    """
     if not SEEN_PATH.exists():
+        print(f"{SEEN_PATH.name} 없음 — 전건을 신규로 본다. 어제 항목이 다시 실린다",
+              file=sys.stderr)
         return []
     try:
         data = json.loads(SEEN_PATH.read_text())
         return data if isinstance(data, list) else []
-    except Exception:
+    except Exception as e:
+        print(f"{SEEN_PATH.name} 읽기 실패({e}) — 전건을 신규로 본다", file=sys.stderr)
         return []
 
 
@@ -448,6 +458,11 @@ def main() -> int:
         fresh.append(it)
 
     print(f"\n총 {len(collected)}건 수집, 신규 {len(fresh)}건")
+    if not collected:
+        # "모든 소스가 죽었다" 와 "새 게 없다" 는 다르다. 전자를 0 으로 끝내면
+        # 브랜치가 안 생긴 걸 며칠 뒤 auto-post 가 죽을 때서야 알게 된다.
+        print("모든 소스에서 한 건도 못 받았다 — 수집이 죽었다", file=sys.stderr)
+        return 1
     if not fresh:
         print("신규 항목 없음 — 파일 생성 안 함")
         return 0
