@@ -44,13 +44,19 @@ NUM_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(%|배속|배|원|만|억|ms|초|�
 # 단위 목록에 없는 꼬리(회·번·곳·줄·토큰…)는 단위 없음으로 본다 — 목록을 늘리면 그만큼
 # 충돌 판정이 늘어 정상 초안이 막힌다. 늘리려면 "그 단위와 충돌하는 다른 단위"가 있을 때만.
 SAME_UNIT = {"건": "개", "명": "개"}
-# 비평 본문이 규칙 위반을 가리키는 표현. "규칙 3은 잘 지켰다" 같은 긍정 언급은 안 걸린다.
-# 스레드 프롬프트가 권장(3·4·6·20)·긴 글 전용(9~14)이라고 선언한 규칙은 FAIL 사유가 아니다
-THREAD_SOFT_RULES = {3, 4, 6, 9, 10, 11, 12, 13, 14, 20}
-ALL_RULES = set(range(1, 21))          # voice.md 규칙 20개
+ALL_RULES = set(range(1, 21))          # voice.md 규칙 20개 (`## N.` 스무 개, 1~20 연속)
 # 프롬프트가 PASS 기준으로 **선언한 규칙만** FAIL 사유가 된다. 비평이 그 밖의 규칙을
 # 지적하는 건 참고지 탈락이 아니다 — 안 그러면 "비평이 전부 칭찬이어야 통과"가 된다.
-JUDGED_RULES = {"blog": {1, 2, 3, 4, 18}, "thread": ALL_RULES - THREAD_SOFT_RULES}
+# 각 항목은 아래 프롬프트의 PASS 기준 문장과 1:1로 맞춰 둔 것이다. 프롬프트를 고치면 여기도 고쳐라.
+#   blog   1·2·3·4(명시) · 13(`> 한 줄 요약` 으로 닫는다) · 18(1인칭 선언)
+#   thread (a) 훅=1 · (b) 평서 종결=2. 프롬프트가 기준으로 선언한 건 이 둘뿐이다.
+#          예전엔 "권장 규칙만 빼기"로 넓게 잡았는데, 그러면 5(볼드 — Threads 는 평문이라
+#          적용 불가)·18(1인칭 — 체인 파트별로 채점해 중간 파트는 구조적으로 못 지킨다)이
+#          탈락 사유가 된다. 실측에선 아직 안 터졌지만 판정 모델이 바뀌면 그날로 지뢰다.
+JUDGED_RULES = {"blog": {1, 2, 3, 4, 13, 18}, "thread": {1, 2}}
+# `VIOLATIONS:` 줄이 "없음" 이라고 말하는 표현. 이 줄 안에서만 쓴다 — 산문 전체를
+# 부정 판별하려 들면 진다(2026-09-16에 겪었다). 여기선 한 줄, 한 판단이라 감당된다.
+NONE_RE = re.compile(r"\bnone\b|\bn/?a\b|없음|없다|해당\s*없", re.I)
 
 
 def strip_code(md: str) -> str:
@@ -166,14 +172,27 @@ def critique_violations(kind: str, out: str) -> list[int]:
     그래서 산문을 더 잘 파싱하는 대신 판정 모델에게 **줄 하나를 더** 받는다.
     한국어 부정을 정규식으로 맞히려 들지 않는다 — 그 싸움은 이길 수 없다.
     """
-    m = re.search(r"VIOLATIONS:\s*([^\n]*)", out)
+    # `**VIOLATIONS:** 1` · `violations : 1` 같은 마크다운·대소문자 변형까지 받는다.
+    m = re.search(r"\**\s*VIOLATIONS\s*\**\s*:\s*([^\n]*)", out, re.I)
     if not m:
         # 형식을 안 지킨 경우. 여기서 FAIL 시키면 판정 모델이 줄을 빠뜨릴 때마다
         # 모든 초안이 죽는다 — VERDICT 만 믿고 로그로 알린다.
         print(f"grade[{kind}]: VIOLATIONS 줄 없음 — VERDICT 만 믿는다", file=sys.stderr)
         return []
-    nums = {int(n) for n in re.findall(r"\d+", m.group(1))}
-    return sorted(nums & JUDGED_RULES.get(kind, ALL_RULES))
+    line = m.group(1)
+    # `R13`(번호 규칙) · `F5`('이 목소리가 아닌 것' 5번) 로 써 주면 구분된다. 둘은 voice.md
+    # 안에서 **같은 숫자 공간**을 쓴다 — 맨숫자만 오면 어느 쪽인지 알 수 없다.
+    rules = {int(n) for n in re.findall(r"R(\d+)", line, re.I)}
+    forbid = sorted({int(n) for n in re.findall(r"F(\d+)", line, re.I)})
+    if not rules and not forbid:
+        # 접두사 없이 왔다. "없음 (규칙 1~20 모두 준수)" 처럼 숫자가 섞인 부정문을
+        # 위반으로 읽지 않는다 — 없다고 말하면 없는 것이다.
+        if NONE_RE.search(line):
+            return []
+        rules = {int(n) for n in re.findall(r"\d+", line)}
+    # 금지 7개는 두 종류 모두의 PASS 기준이다. 결정론 층이 대부분 잡지만 여기서도 받는다.
+    return [f"규칙 {n}" for n in sorted(rules & JUDGED_RULES.get(kind, ALL_RULES))] \
+        + [f"금지 {n}" for n in forbid]
 
 
 def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
@@ -182,7 +201,9 @@ def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
     prompt = (
         "너는 발행 전 편집자다. 아래 '말투 규칙'을 기준으로 '초안'을 심사한다.\n"
         "먼저 규칙 위반·어색한 문장·근거 없는 단정을 3줄 이내로 비평해라.\n"
-        "그 다음 줄에 정확히 `VIOLATIONS: <위반한 규칙 번호를 쉼표로, 없으면 none>` 을 써라.\n"
+        "그 다음 줄에 정확히 `VIOLATIONS: <위반 목록, 없으면 none>` 을 써라. "
+        "번호 규칙은 `R번호`(예: R13), '이 목소리가 아닌 것' 항목은 `F번호`(예: F5) 로 쓴다 — "
+        "둘은 번호가 겹쳐서 접두사가 없으면 구분이 안 된다.\n"
         "그 다음 마지막 줄에 정확히 `VERDICT: PASS` 또는 `VERDICT: FAIL` 만 써라.\n"
         + ("PASS 기준: 규칙 1·2·3·4 를 지키고, '이 목소리가 아닌 것' 7개에 하나도 안 걸리며, "
            "첫 문장이 결론이나 증상이고, 끝이 `> 한 줄 요약` 이다. "
@@ -209,8 +230,8 @@ def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
         return False, "LLM 이 판정 줄을 내지 않음"
     hits = critique_violations(kind, out)
     if hits:
-        print(f"grade[{kind}]: VERDICT={m[-1]} 이지만 판정 기준 규칙 {hits} 위반 → FAIL", file=sys.stderr)
-        return False, out.strip() + f"\n  ↳ 판정 기준 규칙 위반: {hits}"
+        print(f"grade[{kind}]: VERDICT={m[-1]} 이지만 {', '.join(hits)} 위반 → FAIL", file=sys.stderr)
+        return False, out.strip() + f"\n  ↳ 판정 기준 위반: {', '.join(hits)}"
     return m[-1] == "PASS", out.strip()
 
 
@@ -334,14 +355,32 @@ tags: ["원장"]
             llm.ask = lambda *a, _p=prose, **k: f"{_p}\nVIOLATIONS: none\nVERDICT: PASS"
             assert llm_verdict("blog", good_blog)[0], prose
 
-        # 블로그 PASS 기준(1·2·3·4·18) 밖의 규칙 지적은 참고지 탈락이 아니다
+        # 블로그 PASS 기준(1·2·3·4·13·18) 밖의 규칙 지적은 참고지 탈락이 아니다
         llm.ask = lambda *a, **k: "규칙 20(격언)을 놓쳤다.\nVIOLATIONS: 20\nVERDICT: PASS"
         assert llm_verdict("blog", good_blog)[0]
-        # 스레드는 권장 규칙(3·4·6·20)·긴 글 규칙(9~14)이 FAIL 사유가 아니다
-        llm.ask = lambda *a, **k: "비평.\nVIOLATIONS: 6, 20\nVERDICT: PASS"
-        assert llm_verdict("thread", "짧은 논평이다.")[0]
+        # 규칙 13(`> 한 줄 요약` 으로 닫는다)은 프롬프트가 PASS 기준으로 선언한 것이다.
+        # 실측(claude -p)에서 판정 모델이 `VIOLATIONS: 13` 을 쓰는데 예전엔 무시됐다.
+        llm.ask = lambda *a, **k: "끝이 한 줄 요약으로 안 닫힌다.\nVIOLATIONS: 13\nVERDICT: PASS"
+        assert not llm_verdict("blog", good_blog)[0]
+        # 스레드 기준은 훅(1)·평서 종결(2) 둘뿐이다. 5(볼드)는 Threads 가 평문이라 적용 불가,
+        # 18(1인칭)은 체인 파트별 채점이라 중간 파트가 구조적으로 못 지킨다.
+        for n in (5, 6, 18, 20):
+            llm.ask = lambda *a, _n=n, **k: f"비평.\nVIOLATIONS: {_n}\nVERDICT: PASS"
+            assert llm_verdict("thread", "짧은 논평이다.")[0], n
         llm.ask = lambda *a, **k: "비평.\nVIOLATIONS: 2\nVERDICT: PASS"
         assert not llm_verdict("thread", "짧은 논평이다.")[0]
+        # 금지 7개('이 목소리가 아닌 것')는 규칙과 번호 공간이 겹친다 — F 접두사로 구분한다
+        llm.ask = lambda *a, **k: "여러분·느낌표.\nVIOLATIONS: F1, F2\nVERDICT: PASS"
+        ok, why = llm_verdict("thread", "짧은 논평이다.")
+        assert not ok and "금지 1" in why, why
+        # 마크다운·대소문자 변형을 받는다. 못 받으면 안전망이 조용히 꺼진다
+        for line in ("**VIOLATIONS**: 1", "violations: 1", "VIOLATIONS : 1", "**VIOLATIONS:** 1"):
+            llm.ask = lambda *a, _l=line, **k: f"비평.\n{_l}\nVERDICT: PASS"
+            assert not llm_verdict("blog", good_blog)[0], line
+        # 숫자가 섞인 부정문을 위반으로 읽지 않는다 — 없다고 말하면 없는 것이다
+        for line in ("VIOLATIONS: 없음 (규칙 1~20 모두 준수)", "VIOLATIONS: 해당 없음. 규칙 18 포함 전부 지켰다"):
+            llm.ask = lambda *a, _l=line, **k: f"비평.\n{_l}\nVERDICT: PASS"
+            assert llm_verdict("blog", good_blog)[0], line
         # 형식을 안 지키면 VERDICT 만 믿는다 — 여기서 죽으면 모든 초안이 막힌다
         llm.ask = lambda *a, **k: "비평만 있고 목록이 없다.\nVERDICT: PASS"
         assert llm_verdict("blog", good_blog)[0]
@@ -350,7 +389,7 @@ tags: ["원장"]
         seen: list[str] = []
         llm.ask = lambda p, **k: (seen.append(p), "VIOLATIONS: none\nVERDICT: PASS")[1]
         llm_verdict("blog", good_blog)
-        assert "규칙 18" in seen[0] and "1인칭" in seen[0] and "VIOLATIONS:" in seen[0], seen[0][:300]
+        assert all(t in seen[0] for t in ("규칙 18", "1인칭", "VIOLATIONS:", "R번호", "F번호")), seen[0][:300]
     finally:
         llm.ask = real_ask
     print("selftest ok")
