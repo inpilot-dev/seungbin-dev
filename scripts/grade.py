@@ -36,6 +36,16 @@ BLOG_MIN_BODY = 600      # 글자. 이보다 짧으면 글이 아니라 메모�
 OK_SYMBOLS = set("✅❌🔴🟡⚪")   # voice.md 가 라벨 자리로 허용한 기호
 EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF☀-➿\U0001F900-\U0001F9FF]")
 NUM_RE = re.compile(r"\d[\d,]*\.?\d*\s*(?:%|배|원|만|억|ms|초|분|시간|일|건|개|명|배속)?")
+# 비평 본문이 규칙 위반을 가리키는 표현. "규칙 3은 잘 지켰다" 같은 긍정 언급은 안 걸린다.
+# 2026-09-16 실제 비평은 지적 3개 중 "약하게 따른다" 하나만 걸렸다. 나머지 어휘는 그때
+# 로그를 보고 채웠다 — 새 표현이 보이면 여기 한 단어씩 늘리는 게 맞다.
+VIOLATION_RE = re.compile(
+    r"위반|위배|어긴|어겼|어긋|미준수|미흡|무시하|안 지켰|못 지켰|지키지 않|지켜지지 않"
+    r"|부합하지 않|놓쳤|놓치고|빠뜨|약하게 (?:따르|따름|따른|지)")
+# "규칙 위반 없음" / "위반은 아니다" 는 위반이 아니다
+NO_VIOLATION_RE = re.compile(r"(?:위반|위배)[^.\n]{0,8}?(?:없|아니)")
+# 스레드 프롬프트가 권장(3·4·6·20)·긴 글 전용(9~14)이라고 선언한 규칙은 FAIL 사유가 아니다
+THREAD_SOFT_RULES = {3, 4, 6, 9, 10, 11, 12, 13, 14, 20}
 
 
 def strip_code(md: str) -> str:
@@ -122,6 +132,22 @@ def deterministic(kind: str, md: str, sources: list[str]) -> list[str]:
     return fails
 
 
+def critique_violations(kind: str, out: str) -> list[str]:
+    """비평 본문에 적힌 규칙 위반을 줍는다. 마지막 VERDICT 줄과 무관하게 본다."""
+    hits = []
+    for seg in re.split(r"[.\n,]", out):
+        if "규칙" not in seg and "금지" not in seg:
+            continue
+        if not VIOLATION_RE.search(seg) or NO_VIOLATION_RE.search(seg):
+            continue
+        nums = {int(n) for n in re.findall(r"\d+", seg)}
+        # 스레드는 권장 규칙만 언급된 비평이면 넘어간다 (프롬프트가 FAIL 사유로 안 삼는다고 선언)
+        if kind == "thread" and nums and nums <= THREAD_SOFT_RULES:
+            continue
+        hits.append(seg.strip())
+    return hits
+
+
 def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
     """비평 먼저, 판정은 마지막 줄 한 단어. 판정 줄이 없으면 FAIL."""
     voice = VOICE.read_text(encoding="utf-8") if VOICE.exists() else "(voice.md 없음)"
@@ -131,6 +157,8 @@ def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
         "그 다음 마지막 줄에 정확히 `VERDICT: PASS` 또는 `VERDICT: FAIL` 만 써라.\n"
         + ("PASS 기준: 규칙 1·2·3·4 를 지키고, '이 목소리가 아닌 것' 7개에 하나도 안 걸리며, "
            "첫 문장이 결론이나 증상이고, 끝이 `> 한 줄 요약` 이다. "
+           "규칙 18(1인칭 선언 — \"나는 ~로 갔다\" / \"내 기준은 이렇다\")이 본문에 최소 한 번 있어야 한다. "
+           "남의 일처럼 서술만 하고 내 선택 선언이 없으면 FAIL. "
            "그리고 글이 기술 블로그 주제(AI 워크플로우·자동화·백엔드·핀테크 시스템·개발자 도구)여야 한다 — "
            "정치·사회 뉴스, 기업 인사, 지역 이슈를 다루면 문체가 좋아도 FAIL. 애매하면 FAIL.\n"
            if kind == "blog" else
@@ -150,6 +178,11 @@ def llm_verdict(kind: str, md: str) -> tuple[bool, str]:
     m = re.findall(r"VERDICT:\s*(PASS|FAIL)", out)
     if not m:
         return False, "LLM 이 판정 줄을 내지 않음"
+    hits = critique_violations(kind, out)
+    if hits:
+        print(f"grade[{kind}]: VERDICT={m[-1]} 이지만 비평에 규칙 위반 명시 → FAIL: {hits[0][:80]}",
+              file=sys.stderr)
+        return False, out.strip() + f"\n  ↳ 비평에 적힌 위반: {' / '.join(hits)}"
     return m[-1] == "PASS", out.strip()
 
 
@@ -217,6 +250,38 @@ tags: ["원장"]
 
     # 빈칸이 남은 초안은 발행 불가
     assert any("빈칸" in f for f in deterministic("thread", "[내가 채울 것: 수치]", []))
+
+    # 여기부터 LLM 판정 — llm.ask 를 가짜 응답으로 갈아끼워 네트워크 없이 돈다
+    real_ask = llm.ask
+    try:
+        # 결함1: 비평에 위반이 적혔으면 VERDICT 가 PASS 라도 FAIL
+        llm.ask = lambda *a, **k: "규칙 1 위반, 규칙 5 위반, 규칙 18을 약하게 따른다.\nVERDICT: PASS"
+        ok, why = llm_verdict("blog", good_blog)
+        assert not ok and "비평에 적힌 위반" in why, why
+        # 2026-09-16 run 35047554531 의 비평 원문 그대로 — 이게 실제로 막혀야 할 회귀다
+        real = ('첫 문장이 판정이 아니라 현상 설명("~나왔다")이라 결론을 빠르게 드러내지 않는다 (규칙 1). '
+                '문장 전체에 볼드를 걸었는데, 규칙 5는 판정이 걸린 구절 하나만 강조하는 것이다. '
+                '명시적 1인칭이 거의 없어 규칙 18을 약하게 따르고 있다.\n\nVERDICT: PASS')
+        llm.ask = lambda *a, **k: real
+        assert not llm_verdict("blog", good_blog)[0]
+        # 같은 지적을 다른 어휘로 써도 잡힌다
+        for phrase in ("규칙 5와 어긋난다", "규칙 5에 부합하지 않는다", "규칙 2를 놓쳤다"):
+            llm.ask = lambda *a, **k: f"{phrase}.\nVERDICT: PASS"
+            assert not llm_verdict("blog", good_blog)[0], phrase
+        # 긍정 언급·위반 없음은 그대로 PASS (안 그러면 아무것도 통과 못 한다)
+        llm.ask = lambda *a, **k: "규칙 3은 잘 지켰다. 규칙 위반 없음.\nVERDICT: PASS"
+        assert llm_verdict("blog", good_blog)[0]
+        # 스레드에서 권장 규칙(6)만 지적한 비평은 FAIL 사유가 아니다 — 프롬프트와 같은 기준
+        llm.ask = lambda *a, **k: "규칙 6을 약하게 따른다.\nVERDICT: PASS"
+        assert llm_verdict("thread", "짧은 논평이다.")[0]
+
+        # 결함2: 블로그 판정 프롬프트에 규칙 18(1인칭 선언) 기준이 들어 있다
+        seen: list[str] = []
+        llm.ask = lambda p, **k: (seen.append(p), "VERDICT: PASS")[1]
+        llm_verdict("blog", good_blog)
+        assert "규칙 18" in seen[0] and "1인칭" in seen[0], seen[0][:300]
+    finally:
+        llm.ask = real_ask
     print("selftest ok")
     return 0
 
