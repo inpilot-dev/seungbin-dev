@@ -264,6 +264,12 @@ def main(argv: list[str]) -> int:
     if not sources:
         print("출처가 비었다 — 출처 없는 글은 만들지 않는다", file=sys.stderr)
         return 2
+    if len(sources) != len(a.source):
+        # 못 읽은 출처를 버리고 진행하면, 읽지도 않은 출처가 frontmatter 의
+        # sources: 에 인용한 것처럼 남고 grade.py 수치 대조의 근거도 그만큼 준다.
+        missing = [s for s in a.source if s not in {l for l, _ in sources}]
+        print(f"출처 {len(a.source)}개 중 {len(missing)}개를 못 읽었다: {missing}", file=sys.stderr)
+        return 2
     mdx, ok, why = generate(a.topic, sources, use_llm_grade=not a.no_llm_grade)
     if not mdx:
         return 1
