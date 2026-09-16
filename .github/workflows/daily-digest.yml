@@ -53,6 +53,7 @@ jobs:
         run: python scripts/x_core.py
 
       - name: Push digest branch
+        id: push
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -69,11 +70,17 @@ jobs:
           git add digest/
           git commit -m "chore(digest): $DATE 수집"
           git push -u origin "$BRANCH"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
 
       # ponytail: 브랜치가 유일한 저장소라 지우면 그날 수집은 사라진다.
       # auto-post 는 최신 1개만 읽으므로 14일이면 충분하다. 더 길게 보관할 일이
       # 생기면 CUTOFF 날짜만 바꾼다.
+      #
+      # 오늘치를 실제로 푸시했을 때만 지운다. collect_digest 는 전부 실패해도
+      # "신규 항목 없음" 으로 성공 종료하므로, 이 조건이 없으면 브랜치를 안 만든 날에도
+      # 삭제가 돌고 14일 연속이면 저장소가 비어 auto-post 가 재료를 잃는다.
       - name: Prune digest branches older than 14 days
+        if: steps.push.outputs.pushed == 'true'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -83,6 +90,10 @@ jobs:
           gh api --paginate "repos/$GITHUB_REPOSITORY/branches" --jq '.[].name' \
             | { grep '^digest/[0-9]' || true; } | awk -v c="$CUTOFF" '$0 < c' \
             | while read -r b; do
-                echo "삭제: $b"
-                gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$b"
+                # 하나가 실패해도(권한·이미 삭제됨) 나머지는 계속 지운다. 조용히 멈추지 않게 알린다.
+                if gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$b"; then
+                  echo "삭제: $b"
+                else
+                  echo "::warning title=브랜치 삭제 실패::$b"
+                fi
               done

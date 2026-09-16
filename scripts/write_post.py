@@ -61,6 +61,13 @@ def load_source(ref: str) -> tuple[str, str]:
 
 
 DIGEST_DIR = ROOT / "digest"
+DIGEST_MAX_AGE = 3   # 일. 다이제스트는 매일 새로 나온다 — 하루 이틀 펑크는 봐주고 그 이상은 죽는다
+
+
+def digest_date(f: Path):
+    """파일명에 박힌 날짜(`2026-09-16.md`·`x-2026-09-16.md`). 없으면 None — 수집 산출물이 아니다."""
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", f.name)
+    return datetime(*map(int, m.groups())).date() if m else None
 
 
 NICHE = ("AI 워크플로우·자동화, 백엔드 시스템, 핀테크/트레이딩 시스템 설계, 개발자 도구. "
@@ -95,9 +102,21 @@ def pick_from_digest(pick: int = 1) -> tuple[str, list[str]]:
     2026-09-14 실측: 적합성 없이 1번을 집으니 '미시간대 데이터센터 타운홀' 뉴스가 블로그에 실렸다.
     2026-09-15 실측: 다이제스트는 매일 main 에서 새로 따서 전날 항목이 다시 올라온다(9/14치 36건 중
     13건이 9/13과 같음). 이미 쓴 출처를 안 거르면 같은 글을 덮어쓰고 스레드도 한 번 더 나간다.
+    2026-09-16: mtime 정렬을 버렸다. git 은 mtime 을 보존하지 않아 CI 에선 전부 체크아웃 시각이라
+    정렬이 무의미했다. 파일명 날짜로 정렬하고, DIGEST_MAX_AGE 일 넘게 묵었으면 죽는다 —
+    main 에 추적 파일로 남은 낡은 digest 로 조용히 글을 쓰던 구멍이 여기였다.
+    날짜 없는 파일명은 수집 산출물이 아니므로 아예 후보에서 뺀다.
     """
     done = written_urls()
-    files = sorted(DIGEST_DIR.glob("*.md"), key=lambda f: f.stat().st_mtime, reverse=True)
+    today = datetime.now(KST).date()
+    dated = sorted(((d, f) for f in DIGEST_DIR.glob("*.md") if (d := digest_date(f))), reverse=True)
+    if not dated:
+        raise SystemExit("날짜 박힌 digest/*.md 가 없다 — 다이제스트를 먼저 가져와라")
+    age = (today - dated[0][0]).days
+    if age > DIGEST_MAX_AGE:
+        raise SystemExit(f"가장 최근 다이제스트 {dated[0][1].name} 가 {age}일 묵었다 "
+                         f"(> {DIGEST_MAX_AGE}일) — 글을 만들지 않는다")
+    files = [f for d, f in dated if (today - d).days <= DIGEST_MAX_AGE]
     for f in files:
         items = re.findall(r"^- \[[ x]\] \*\*(.+?)\*\*\n[ \t]*`[^`]*`[^\n]*?(https?://\S+)",
                            f.read_text(encoding="utf-8"), re.M)
@@ -274,13 +293,28 @@ def selftest() -> int:
     DIGEST_DIR, CONTENT = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
     global on_topic
     on_topic = lambda titles: [t in ("첫 항목", "둘째 항목") for t in titles]   # noqa: E731  LLM 없이 판정 흉내
-    (DIGEST_DIR / "x.md").write_text(
+    today = datetime.now(KST).date()
+    (DIGEST_DIR / f"x-{today}.md").write_text(
         "- [ ] **정치 뉴스**\n      `Techmeme` · https://ex.com/0\n\n"
         "- [ ] **첫 항목**\n      `bsky @a` · https://ex.com/1\n\n"
         "- [ ] **둘째 항목**\n      `HN` · https://ex.com/2\n", encoding="utf-8")
     assert pick_from_digest(1) == ("첫 항목", ["https://ex.com/1"])   # 주제 밖 1번은 건너뛴다
     (CONTENT / "old.mdx").write_text('---\nsources: ["https://ex.com/1/"]\n---\n본문\n', encoding="utf-8")
     assert pick_from_digest(1) == ("둘째 항목", ["https://ex.com/2"])  # 이미 쓴 출처(끝 슬래시 달라도)는 건너뛴다
+    # 정렬은 mtime 이 아니라 파일명 날짜다 — 어제 파일을 방금 써도 오늘 파일이 이긴다
+    (DIGEST_DIR / f"x-{today - timedelta(days=1)}.md").write_text(
+        "- [ ] **첫 항목**\n      `bsky @a` · https://ex.com/9\n", encoding="utf-8")
+    assert pick_from_digest(1) == ("둘째 항목", ["https://ex.com/2"])
+    # 날짜 없는 파일명은 후보가 아니고, 묵은 다이제스트로는 글을 쓰지 않는다 (조용한 성공 금지)
+    assert digest_date(Path("x.md")) is None and digest_date(Path(f"x-{today}.md")) == today
+    DIGEST_DIR = Path(tempfile.mkdtemp())
+    (DIGEST_DIR / f"x-{today - timedelta(days=DIGEST_MAX_AGE + 1)}.md").write_text(
+        "- [ ] **첫 항목**\n      `bsky @a` · https://ex.com/3\n", encoding="utf-8")
+    try:
+        pick_from_digest(1)
+        raise AssertionError("묵은 다이제스트로 글을 썼다")
+    except SystemExit as e:
+        assert "묵었다" in str(e), e
     assert html_to_text(b"<html><script>x()</script><p>Hi &amp; bye</p></html>") == "Hi & bye"
     wrapped = "여기 글입니다:\n```mdx\n---\ntitle: \"t\"\n---\n\n본문\n```\n"
     assert extract_mdx(wrapped) == "---\ntitle: \"t\"\n---\n\n본문\n", repr(extract_mdx(wrapped))
