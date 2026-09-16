@@ -8,6 +8,15 @@
 기존 publish_threads.py 의 게이트(체크+논평)는 사람이 논평을 쓰는 경로다. 이 스크립트는
 그 옆의 두 번째 경로다: **논평 대신 채점기가 게이트**다. 둘 다 "기계 요약 그대로 발행"은 못 한다.
 
+--draft 가 보장하는 것 (생성 경로와 다르다 — 착각하지 마라):
+  - 파일명이 `.FAIL` 이면 거부한다. 채점기가 떨어뜨린 초안은 이 이름으로만 저장되므로,
+    "통과해서 저장된 파일"만 발행된다.
+  - 발행 직전 grade.deterministic 을 다시 돌린다(사람이 손댔을 수 있다).
+  - LLM 판정·수치 대조는 **다시 하지 않는다.** 재생성 없이 발행하는 게 이 옵션의 존재 이유고,
+    LLM 판정은 비결정적이라 이미 통과한 글을 다시 떨어뜨린다(2026-09-14: 3편 중 2편).
+    끊긴 체인 이어붙이기에서 이게 막히면 체인이 영구히 반쪽으로 남는다. 원문을 모르니
+    수치 대조도 불가능하다.
+
 토큰(THREADS_TOKEN)이 없으면 DRY_RUN 으로 무엇이 나갈지만 찍고 0 으로 끝난다.
 
 사용:
@@ -130,7 +139,7 @@ def main(argv: list[str]) -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--post", help="content/*.mdx")
     g.add_argument("--digest", help="digest/*.md")
-    g.add_argument("--draft", help="drafts/threads/*.md — 이미 통과한 초안을 재생성 없이 발행")
+    g.add_argument("--draft", help="drafts/threads/*.md — 이미 통과한 초안을 재생성 없이 발행 (.FAIL 은 거부)")
     ap.add_argument("--pick", type=int, default=1)
     ap.add_argument("--reply-to", default=None, help="이 게시물 ID 의 답글로 시작 (끊긴 체인 이어붙이기)")
     ap.add_argument("--start", type=int, default=1, help="--draft 의 N번째 글부터 (1-based)")
@@ -139,11 +148,21 @@ def main(argv: list[str]) -> int:
     a = ap.parse_args(argv[1:])
 
     if a.draft:
-        parts = split_parts(Path(a.draft).read_text(encoding="utf-8"))
+        draft = Path(a.draft)
+        # 채점 탈락 초안은 `.FAIL.md` 로만 저장된다. 같은 폴더에 있고 아티팩트로도 올라가니
+        # 경로만 바꿔 넣으면 그대로 나갈 뻔했다 — 이름으로 잘라낸다.
+        if ".FAIL" in draft.name:
+            print(f"거부: {draft.name} 은 채점기가 떨어뜨린 초안이다 — .FAIL 은 발행하지 않는다")
+            return 1
+        parts = split_parts(draft.read_text(encoding="utf-8"))
         fails = [f"{i + 1}번 글: {w}" for i, p in enumerate(parts)
                  for w in grade.deterministic("thread", p, [])]
         if fails:
             print("FAIL (초안 결정론 검사)"); [print(f"  - {f}") for f in fails]
+            return 1
+        # --start 는 워크플로 입력(자유 문자열)에서 온다. 0 이면 parts[-1:] 이라 마지막 글만 조용히 나간다.
+        if not 1 <= a.start <= len(parts):
+            print(f"거부: --start {a.start} 는 범위 밖이다 — 이 초안은 글 {len(parts)}개 (1~{len(parts)})")
             return 1
         parts = parts[a.start - 1:]
         if a.publish:
@@ -185,6 +204,16 @@ def selftest() -> int:
     os.environ.pop("THREADS_TOKEN", None)
     assert publish_chain(["a", "b"], dry=False) == ["dry-run", "dry-run"]
     assert publish_chain(["c"], dry=True, reply_to="123") == ["dry-run"]
+    import tempfile
+    d = Path(tempfile.mkdtemp())
+    (d / "x.FAIL.md").write_text("탈락한 초안이다\n", encoding="utf-8")
+    assert main(["", "--draft", str(d / "x.FAIL.md")]) == 1          # 채점 탈락 초안은 발행 거부
+    good = d / "x.md"
+    good.write_text("하나\n---\n둘\n---\n셋\n", encoding="utf-8")
+    assert main(["", "--draft", str(good)]) == 0
+    assert main(["", "--draft", str(good), "--start", "0"]) == 1     # 0 이면 마지막 글만 나갈 뻔했다
+    assert main(["", "--draft", str(good), "--start", "4"]) == 1
+    assert main(["", "--draft", str(good), "--start", "3"]) == 0
     print("selftest ok")
     return 0
 

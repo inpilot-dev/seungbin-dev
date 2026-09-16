@@ -2,7 +2,12 @@ name: publish-thread
 
 # 기존 글 하나로 Threads 스레드만 만들어 발행한다 (수동). auto-post 와 달리 새 글을 만들지 않는다.
 # 용도: 토큰 검증 · 예전 글 재발행 · 채점 탈락한 스레드 재시도.
-# 게이트는 같다 — scripts/grade.py 를 통과한 초안만 나간다. DRY_RUN=1 이면 무엇이 나갈지만 로그에 찍는다.
+# 게이트는 경로마다 다르다 — 예전 주석은 "게이트는 같다"고 했는데 사실이 아니었다:
+#   post  경로 — grade.py 전체(결정론 검사 + 수치 대조 + LLM 판정)를 통과해야 나간다.
+#   draft 경로 — 재생성·재판정을 하지 않는 게 이 옵션의 존재 이유다(끊긴 체인 이어붙이기).
+#                생성 때 통과해 저장된 파일만 받고(.FAIL 초안은 스크립트가 거부한다),
+#                발행 직전 결정론 검사만 다시 돈다. LLM 판정·수치 대조는 다시 하지 않는다.
+# DRY_RUN=1 이면 무엇이 나갈지만 로그에 찍힌다.
 on:
   workflow_dispatch:
     inputs:
@@ -11,7 +16,7 @@ on:
         required: false
         type: string
       draft:
-        description: "drafts/threads/*.md — 통과한 초안을 재생성 없이 발행"
+        description: "drafts/threads/*.md — 통과한 초안을 재생성 없이 발행 (.FAIL 초안은 거부된다)"
         required: false
         type: string
       reply_to:
@@ -19,7 +24,7 @@ on:
         required: false
         type: string
       start:
-        description: "(draft 전용) N번째 글부터"
+        description: "(draft 전용) N번째 글부터. 1 ~ 초안의 글 개수, 범위 밖이면 거부된다"
         required: false
         type: string
         default: "1"
@@ -67,6 +72,8 @@ jobs:
             [ -f "$POST" ] || { echo "::error::$POST 없음"; exit 1; }
             python scripts/write_thread.py --post "$POST" --publish
           fi
+      # .FAIL 초안도 같이 올라온다 — 떨어진 이유를 보라고 남기는 것이다.
+      # 이름을 바꿔 발행하려 들지 마라. 통과 기록이 파일 이름뿐이라 게이트가 뚫린다.
       - name: Keep draft
         if: always()
         uses: actions/upload-artifact@v4

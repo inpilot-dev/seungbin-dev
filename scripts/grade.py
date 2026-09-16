@@ -10,7 +10,7 @@
   2) LLM 검사   — claude -p(Haiku) 에게 voice.md 20개 규칙으로 비평 먼저, 판정은 마지막 한 줄.
      claude 가 없으면 ollama(qwen2.5:7b)로 폴백. 둘 다 없으면 FAIL (열린 실패 금지).
 
-수치 대조(--source): 초안의 2자리 이상 숫자·%·배는 원문 어딘가에 있어야 한다.
+수치 대조(--source): 초안의 2자리 이상 숫자·%·배는 **단위까지 같은 꼴로** 원문에 있어야 한다.
 LLM 이 숫자를 지어내는 건 가장 흔하고 가장 치명적인 실패라 여기서 막는다.
 
 사용:
@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import re
 import sys
+from datetime import date
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -35,7 +36,10 @@ THREAD_MAX = 500
 BLOG_MIN_BODY = 600      # 글자. 이보다 짧으면 글이 아니라 메모다
 OK_SYMBOLS = set("✅❌🔴🟡⚪")   # voice.md 가 라벨 자리로 허용한 기호
 EMOJI_RE = re.compile("[\U0001F300-\U0001FAFF☀-➿\U0001F900-\U0001F9FF]")
-NUM_RE = re.compile(r"\d[\d,]*\.?\d*\s*(?:%|배|원|만|억|ms|초|분|시간|일|건|개|명|배속)?")
+NUM_RE = re.compile(r"(\d[\d,]*(?:\.\d+)?)\s*(%|배속|배|원|만|억|ms|초|분|시간|일|건|개|명)?")
+# 세는 단위는 서로 바꿔 써도 같은 수라 한 묶음으로 본다 — 원문 "12건" 초안 "12개" 는 정상이다.
+# ponytail: 세는 단위만 묶는다. 시간·돈·비율·배는 안 묶는다 (50ms 와 50건 은 다른 수치다).
+SAME_UNIT = {"건": "개", "명": "개"}
 # 비평 본문이 규칙 위반을 가리키는 표현. "규칙 3은 잘 지켰다" 같은 긍정 언급은 안 걸린다.
 # 2026-09-16 실제 비평은 지적 3개 중 "약하게 따른다" 하나만 걸렸다. 나머지 어휘는 그때
 # 로그를 보고 채웠다 — 새 표현이 보이면 여기 한 단어씩 늘리는 게 맞다.
@@ -70,13 +74,14 @@ def split_front(md: str) -> tuple[dict, str]:
 
 
 def numbers(text: str) -> set[str]:
-    """비교용 숫자 집합. 쉼표·공백 제거. 1자리 숫자는 뺀다 (목록 번호·'1개' 같은 건 지어낸 게 아니다)."""
+    """비교용 숫자 집합. '값+단위' 한 덩어리로 담는다 — 단위를 지우면 50ms 가 50건 으로 통과한다.
+    쉼표·공백 제거. 1자리 숫자는 뺀다 (목록 번호·'1개' 같은 건 지어낸 게 아니다)."""
     out = set()
-    for m in NUM_RE.finditer(text):
-        raw = re.sub(r"[,\s]", "", m.group(0))
-        digits = re.sub(r"\D", "", raw)
-        if len(digits) >= 2 or "%" in raw:
-            out.add(digits)
+    for val, unit in NUM_RE.findall(text):
+        val = re.sub(r"[,\s]", "", val)
+        if len(re.sub(r"\D", "", val)) < 2 and unit != "%":
+            continue
+        out.add(val + SAME_UNIT.get(unit, unit))
     return out
 
 
@@ -123,10 +128,17 @@ def deterministic(kind: str, md: str, sources: list[str]) -> list[str]:
             fails.append(f"{len(md)}자 > Threads 상한 {THREAD_MAX}")
 
     if sources:
-        src_nums = numbers(" ".join(sources))
-        made_up = sorted(numbers(prose) - src_nums)
-        # 날짜(연도)는 오늘 날짜에서 나올 수 있어 예외
-        made_up = [n for n in made_up if not (len(n) == 4 and n.startswith("20"))]
+        # 원문도 초안과 같은 전처리를 거친다. 날것으로 두면 URL·타임스탬프·ID 에 박힌
+        # 2자리 숫자가 건초더미가 돼서 지어낸 2자리 수치가 전부 통과한다.
+        src_nums = numbers(strip_code(" ".join(sources)))
+        # 단위까지 같아야 한다. 단 원문에 단위 없이 맨숫자로 있으면(영문 "27 minutes" 등)
+        # 초안이 붙인 단위는 따지지 않는다 — 여기까지 막으면 번역된 원문이 전부 막힌다.
+        made_up = sorted(n for n in numbers(prose)
+                         if n not in src_nums and re.sub(r"[^\d.]+$", "", n) not in src_nums)
+        # 연도는 오늘 날짜에서 정당하게 나올 수 있어 예외 — 단위 없는 진짜 연도 범위만
+        yr = date.today().year
+        made_up = [n for n in made_up
+                   if not (n.isdigit() and len(n) == 4 and 2000 <= int(n) <= yr + 1)]
         if made_up:
             fails.append(f"원문에 없는 수치 {made_up[:6]} — 지어낸 숫자")
     return fails
@@ -243,6 +255,24 @@ tags: ["원장"]
     # 코드 블록 안의 느낌표·숫자는 산문이 아니다
     coded = good_blog + "\n```py\nassert x != 99999  # 틀림!\n```\n"
     assert deterministic("blog", coded, [src]) == []
+
+    # 구멍1: "20 으로 시작하는 4자리" 전면 면제 — 연도가 아닌 20xx 는 잡는다
+    fake20 = good_blog.replace("월 12건에서 0건으로", "컨텍스트 2048 토큰에서 2500 TPS로")
+    assert any("2048" in f for f in deterministic("blog", fake20, [src])), deterministic("blog", fake20, [src])
+    # 진짜 연도는 여전히 면제 (오늘 날짜에서 정당하게 나온다)
+    assert deterministic("blog", good_blog.replace("월 12건", "2026년 기준 월 12건"), [src]) == []
+
+    # 구멍2: 원문도 strip_code — URL·코드에 박힌 숫자는 수치의 근거가 아니다
+    noisy = "참고: https://ex.com/2026/09/37-things 와 `timeout 37` 뿐이다"
+    assert any("37" in f for f in deterministic("blog", good_blog.replace("12건", "37건"), [noisy]))
+
+    # 구멍3: 단위·소수점을 지우면 50ms 가 50건 으로, 1.5배 가 15개 로 통과한다
+    assert any("50ms" in f for f in deterministic("blog", good_blog.replace("월 12건", "응답 50ms"), [src]))
+    assert any("1.5배" in f for f in deterministic("blog", good_blog.replace("월 12건", "1.5배"), ["15개 줄었다"]))
+    # 같은 수를 다른 세는 단위로 쓰는 건 정상 (12건 == 12개)
+    assert deterministic("blog", good_blog.replace("12건", "12개"), [src]) == []
+    # 원문이 단위 없는 맨숫자면(영문 "27 minutes") 초안이 붙인 단위는 안 따진다
+    assert deterministic("blog", good_blog.replace("월 12건", "27분"), ["처리에 27 minutes 걸렸다"]) == []
 
     # Threads 상한
     assert any("상한" in f for f in deterministic("thread", "가" * 501, []))

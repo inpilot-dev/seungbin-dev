@@ -63,10 +63,14 @@ jobs:
           set -euo pipefail
           git fetch origin 'refs/heads/digest/*:refs/remotes/origin/digest/*' || true
           LATEST=$(git for-each-ref --sort=-committerdate --format='%(refname:short)' 'refs/remotes/origin/digest/*' | head -1 || true)
-          if [ -n "$LATEST" ]; then
-            git checkout "$LATEST" -- digest/ && git reset -q digest/
-            echo "다이제스트 브랜치 $LATEST 에서 digest/ 가져옴"
+          if [ -z "$LATEST" ]; then
+            # 여기서 그냥 진행하면 main 에 추적돼 있는 낡은 digest/x-*.md 로 글을 써 버린다.
+            # 조용한 성공 금지 — 재료가 없으면 글을 만들지 않는다.
+            echo "::error title=다이제스트 없음::digest/* 브랜치가 하나도 없다. daily-digest 가 도는지 확인해라"
+            exit 1
           fi
+          git checkout "$LATEST" -- digest/ && git reset -q digest/
+          echo "다이제스트 브랜치 $LATEST 에서 digest/ 가져옴"
 
       - name: Write, grade, publish post
         id: post
@@ -75,7 +79,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TOPIC: ${{ inputs.topic }}
           SOURCES: ${{ inputs.sources }}
-          MERGE: ${{ inputs.merge != false }}
+          # `inputs` 는 workflow_dispatch 에서만 채워진다. schedule 로 돌면 null 이고
+          # GitHub 표현식은 타입이 다르면 숫자로 캐스팅해(null→0, false→0)
+          # `inputs.merge != false` 가 **false** 가 된다 — 2026-09-16 cron 로그에 `MERGE: false`.
+          # 그러면 글은 머지 안 된 PR 에 갇히는데 스레드는 그대로 나가서 404 링크를 단다.
+          MERGE: ${{ github.event_name != 'workflow_dispatch' || inputs.merge }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -91,19 +99,25 @@ jobs:
           python scripts/write_post.py "${ARGS[@]}" --publish | tee out.txt
           SLUG=$(grep -o 'content/[^ ]*\.mdx' out.txt | head -1 || true)
           echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
+          echo "merged=$MERGE" >> "$GITHUB_OUTPUT"
 
       # 여기 오면 글은 이미 머지돼 사이트에 나갔다. 스레드가 채점에서 떨어진 것과
       # 발행이 중간에 끊긴 것은 심각도가 다른데 둘 다 exit 1 이라 워크플로가 똑같이
       # 빨간불이었다. 아래 판정 스텝에서 갈라 낸다.
       - name: Thread from post
         id: thread
-        if: steps.post.outputs.slug != ''
+        if: steps.post.outputs.slug != '' && steps.post.outputs.merged == 'true'
         continue-on-error: true
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
           SLUG: ${{ steps.post.outputs.slug }}
         run: python scripts/write_thread.py --post "$SLUG" --publish
+
+      # 머지 안 한 실행(--merge 없이 dispatch)은 스레드를 안 낸다 — 글이 사이트에 없다
+      - name: 머지 안 했으면 스레드 생략을 알린다
+        if: steps.post.outputs.slug != '' && steps.post.outputs.merged != 'true'
+        run: echo "::warning title=스레드 생략::머지하지 않아 글이 사이트에 없다. PR 을 머지한 뒤 publish-thread 워크플로로 스레드를 내라"
 
       # ponytail: 러너는 매번 새 체크아웃이고 .FAIL.md 는 git 에 없다 —
       # 파일이 있으면 이번 실행이 만든 것이다. 더 정확히 보려면 write_thread 가
