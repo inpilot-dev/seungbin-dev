@@ -109,7 +109,13 @@ def pick_from_digest(pick: int = 1) -> tuple[str, list[str]]:
     """
     done = written_urls()
     today = datetime.now(KST).date()
-    dated = sorted(((d, f) for f in DIGEST_DIR.glob("*.md") if (d := digest_date(f))), reverse=True)
+    # 같은 날짜면 본 다이제스트(`2026-09-16.md`)가 X 다이제스트(`x-2026-09-16.md`)보다 먼저다.
+    # 2026-09-16 실측: 파일명 역순이라 5건짜리 x- 가 36건짜리 본 다이제스트를 항상 이겼고,
+    # 주제 적합 후보가 2건 대 11건이었다. 아무도 고른 적 없는 동작이다 — 정렬에서 떨어진 것뿐이다.
+    # x- 는 소셜 게시물이라 뉴스·논평이 많다. 본 다이제스트가 비면 그때 후보가 된다.
+    dated = sorted(((d, not f.name.startswith("x-"), f)
+                    for f in DIGEST_DIR.glob("*.md") if (d := digest_date(f))), reverse=True)
+    dated = [(d, f) for d, _, f in dated]
     if not dated:
         raise SystemExit("날짜 박힌 digest/*.md 가 없다 — 다이제스트를 먼저 가져와라")
     age = (today - dated[0][0]).days
