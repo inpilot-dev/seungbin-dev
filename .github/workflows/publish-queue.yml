@@ -1,19 +1,27 @@
 name: publish-queue
 
-# 승인된(main 에 merge 된) Threads 원고를 채널 시각에 낸다 — 월·수·금 09:00 KST (증분 2, 2026-09-18).
-#   월 = 다이제스트 논평 ① · 수 = 블로그 기반 · 금 = 논평 ②. 날짜는 원고 사이드카 publish_on 이 정한다.
+# 승인된(main 에 merge 된) 원고를 채널 시각에 낸다 — 09:00 KST (증분 2·4·6, 2026-09-18).
+#   Threads 월·수·금 (월 = 논평 ① · 수 = 블로그 기반 · 금 = 논평 ②, 날짜는 사이드카 publish_on)
+#   Instagram 목 — public/cards/<slug>/ 중 장부에 없는 가장 오래된 덱 1개 (scripts/publish_instagram.py)
+#   뉴스레터 금 — drafts/newsletter/<ISO 주>.md·.html 이 main 에 있으면 (scripts/send_newsletter.py)
 #   대상 고르기·장부는 scripts/publish_queue.py. 장부(drafts/threads/.published.json)를 main 에 커밋한다 —
 #   vercel.json ignoreCommand 가 drafts/ 만 바뀐 커밋은 배포하지 않는다.
-# ⚠️ Secret: THREADS_TOKEN(없으면 DRY — 무엇이 나갈지만 찍고 장부는 안 쓴다) · TELEGRAM_*(없으면 알림 생략)
+# ⚠️ Secret: THREADS_TOKEN · IG_ACCESS_TOKEN·IG_USER_ID · RESEND_API_KEY·RESEND_AUDIENCE_ID·RESEND_FROM
+#   — 없으면 각 스크립트가 DRY(무엇이 나갈지만 찍고 장부는 안 쓴다) · TELEGRAM_*(없으면 알림 생략)
 on:
   schedule:
-    - cron: "0 0 * * 1,3,5"
+    - cron: "0 0 * * 1,3,4,5"
   workflow_dispatch:
     inputs:
       dry_run:
         description: "발행 없이 오늘 낼 원고만 찍는다"
         type: boolean
         default: false
+      channel:
+        description: "auto = 요일대로 · 아니면 그 채널만 (날짜 조건은 각 스크립트가 본다)"
+        type: choice
+        default: auto
+        options: [auto, threads, instagram, newsletter]
 
 permissions:
   contents: write
@@ -40,9 +48,23 @@ jobs:
         with:
           python-version: "3.12"
       - name: Self-check
-        run: python scripts/publish_queue.py --selftest
-      - name: 발행
+        run: |
+          python scripts/publish_queue.py --selftest
+          python scripts/publish_instagram.py --selftest
+          python scripts/send_newsletter.py --selftest
+      - name: 오늘 채널
+        id: ch
+        env:
+          CH: ${{ inputs.channel || 'auto' }}
+        run: |
+          D=$(TZ=Asia/Seoul date +%u)
+          on() { [ "$CH" = "$1" ] || { [ "$CH" = auto ] && [[ " $2 " == *" $D "* ]]; }; }
+          { echo "threads=$(on threads '1 3 5' && echo true || echo false)"
+            echo "instagram=$(on instagram '4' && echo true || echo false)"
+            echo "newsletter=$(on newsletter '5' && echo true || echo false)"; } >> "$GITHUB_OUTPUT"
+      - name: Threads
         id: pub
+        if: steps.ch.outputs.threads == 'true'
         env:
           THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
@@ -54,23 +76,63 @@ jobs:
             { echo "msg<<EOF"; grep -E '^(발행|FAIL|보류|DRY) |링크:|이어붙이기:' out.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
           fi
           exit "$RC"
+      - name: Instagram
+        id: ig
+        if: ${{ !cancelled() && steps.ch.outputs.instagram == 'true' }}
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          IG_USER_ID: ${{ secrets.IG_USER_ID }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: |
+          set -euo pipefail
+          set +e; python scripts/publish_instagram.py 2>&1 | tee ig.txt; RC=${PIPESTATUS[0]}; set -e
+          if ! grep -q '발행할 덱 없음$' ig.txt; then
+            { echo "msg<<EOF"; echo "📸 Instagram"; grep -E '^(덱 |게시됨|실패|거부|건너뜀|\[DRY\])' ig.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          fi
+          exit "$RC"
+      - name: 뉴스레터
+        id: nl
+        if: ${{ !cancelled() && steps.ch.outputs.newsletter == 'true' }}
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_AUDIENCE_ID: ${{ secrets.RESEND_AUDIENCE_ID }}
+          RESEND_FROM: ${{ secrets.RESEND_FROM }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        run: |
+          set -euo pipefail
+          W=$(TZ=Asia/Seoul date +%G-W%V)
+          MD=drafts/newsletter/$W.md
+          if [ ! -f "$MD" ] || [ ! -f "${MD%.md}.html" ]; then
+            echo "$W: 승인된 뉴스레터 없음 — 그 주는 안 나간다"; exit 0
+          fi
+          # 제목 = 원고 첫 '# ' 줄 (작성기 규칙)
+          SUBJ=$(grep -m1 '^# ' "$MD" | sed 's/^# //')
+          [ -n "$SUBJ" ] || { echo "::error title=제목 없음::$MD 에 '# ' 제목 줄이 없다"; exit 1; }
+          set +e; python scripts/send_newsletter.py --md "$MD" --html "${MD%.md}.html" --subject "$SUBJ" 2>&1 | tee nl.txt; RC=${PIPESTATUS[0]}; set -e
+          { echo "msg<<EOF"; echo "✉️ 뉴스레터 $W"; tail -3 nl.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          exit "$RC"
       - name: 장부 커밋
         if: ${{ !cancelled() }}
         run: |
           set -euo pipefail
-          git add drafts/threads/.published.json 2>/dev/null || true
+          # 하나씩 — `git add a b c` 는 경로 하나만 없어도 전부 안 올려서 적힌 장부가 조용히 빠진다
+          for f in drafts/threads/.published.json drafts/cards/.published.json drafts/newsletter/.published.json; do
+            [ -f "$f" ] && git add "$f"
+          done
           git diff --cached --quiet && { echo "장부 변경 없음"; exit 0; }
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -q -m "ledger: Threads 발행 $(TZ=Asia/Seoul date +%F)"
+          git commit -q -m "ledger: 발행 $(TZ=Asia/Seoul date +%F)"
           git push -q origin HEAD:main
       - name: Telegram
-        if: ${{ !cancelled() && (steps.pub.outputs.msg != '' || failure()) }}
+        if: ${{ !cancelled() && (steps.pub.outputs.msg != '' || steps.ig.outputs.msg != '' || steps.nl.outputs.msg != '' || failure()) }}
         uses: ./.github/actions/telegram
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            ${{ steps.pub.outcome == 'failure' && '❌ publish-queue 실패' || '📤 publish-queue' }}
+            ${{ (steps.pub.outcome == 'failure' || steps.ig.outcome == 'failure' || steps.nl.outcome == 'failure') && '❌ publish-queue 실패 있음' || '📤 publish-queue' }}
             ${{ steps.pub.outputs.msg }}
+            ${{ steps.ig.outputs.msg }}
+            ${{ steps.nl.outputs.msg }}
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
