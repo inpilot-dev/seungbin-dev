@@ -58,7 +58,8 @@ def html_to_text(raw: bytes) -> str:
     return re.sub(r"\s+", " ", html.unescape(s)).strip()
 
 
-SRC_MIN = 500          # 이보다 짧으면 본문이 아니다 — 403 페이지·JS 껍데기·리다이렉트 안내
+SRC_MIN = 1500         # 이보다 짧으면 블로그 출처가 아니다 — 403 페이지·JS 껍데기(bsky.app 은 600~700자)·소셜 한 줄.
+                       # 본문 1,200자 이상을 출처 수치만으로 써야 하므로 얇은 출처는 애초에 후보가 아니다
 MAX_PROBES = 20        # 후보 가독성 탐침 상한. fetch 는 건당 최대 20초라 여기서 막아야 잡이 안 늘어진다
 _SRC_CACHE: dict[str, tuple[str, str]] = {}
 
