@@ -164,6 +164,15 @@ def pick_from_digest(pick: int = 1) -> tuple[str, list[str]]:
     return title, [url]
 
 
+def first_readable(cands: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """후보 중 출처 본문을 읽을 수 있는 첫 (제목, URL). 못 읽은 건 건너뛴다(403·빈 페이지)."""
+    for t, u in cands:
+        if load_source(u)[1].strip():
+            return t, u
+        print(f"출처를 못 읽어 다음 후보로: {u}", file=sys.stderr)
+    return None
+
+
 def slugify(topic: str) -> str:
     s = re.sub(r"[^a-z0-9가-힣]+", "-", topic.lower()).strip("-")
     return s[:60] or "post"
@@ -361,8 +370,13 @@ def main(argv: list[str]) -> int:
         cands = candidates(max(a.from_digest, CANDIDATES))
         if len(cands) < a.from_digest:
             raise SystemExit("주제에 맞는 다이제스트 항목이 없다 — 글을 만들지 않는다")
-        a.topic, urls = cands[a.from_digest - 1][0], [cands[a.from_digest - 1][1]]
-        a.source = a.source + urls
+        # 2026-09-18 실측(run 35322414732): 1번 후보 출처가 403 이라 "출처가 비었다" 로 죽고 PR 이 안 열렸다.
+        # 기계가 고른 후보는 못 읽으면 다음 후보로 넘어간다 — 사람이 고른 /주제 N 은 --source 경로라 그대로 죽는다.
+        got = first_readable(cands[a.from_digest - 1:])
+        if not got:
+            print("후보 출처를 하나도 못 읽었다 — 글을 만들지 않는다", file=sys.stderr)
+            return 2
+        a.topic, a.source = got[0], a.source + [got[1]]
     if not (a.topic and a.source):
         ap.error("--topic + --source 또는 --from-digest N")
     sources = [load_source(s) for s in a.source]
@@ -461,6 +475,13 @@ def selftest() -> int:
     body = pr_body("첫 항목", {"title": "T", "description": "D"}, False, ["규칙 1 위반"], c, "https://ex.com/a")
     assert body.startswith("## 주제 후보") and "1. **첫 항목**  ← 이번 원고" in body and "FAIL — 규칙 1 위반" in body
     assert "/주제 N" in body and "2. **둘째 항목**" in body
+    # 1번 출처가 403 이면 2번으로 — PR 본문의 "← 이번 원고" 는 URL 로 따라간다 (run 35322414732)
+    global load_source
+    real_load, load_source = load_source, lambda u: (u, "" if u.endswith("/a") else "본문")   # noqa: E731
+    assert first_readable(c) == ("둘째 항목", "https://ex.com/c")
+    load_source = lambda u: (u, "")   # noqa: E731
+    assert first_readable(c) is None
+    load_source = real_load
     print("selftest ok")
     return 0
 
