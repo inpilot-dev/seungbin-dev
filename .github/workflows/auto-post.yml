@@ -1,33 +1,30 @@
 name: auto-post
 
-# 주제 + 출처 URL 을 주면 글을 생성·채점하고, 통과하면 PR 을 열어 바로 머지한다.
-# 그다음 그 글로 Threads 초안을 만들어 채점 통과 시 발행한다.
+# 주제를 골라 글을 생성·채점하고 **검수 PR** 을 연다. 머지는 사람이 한다 (docs/adr/0001, 2026-09-18).
+#   PR 본문 맨 위 = 주제 후보 5개, 그 아래 = 1번으로 미리 렌더한 원고.
+#   merge = 승인(블로그 즉시 게시 → review.yml 이 Threads 원고 PR 을 연다)
+#   close = 반려 · 댓글 /변경 <지시> · /주제 N = 재생성 (review.yml)
+#   결정이 없으면 보류 → 두 슬롯을 지나면 hold-timer.yml 이 자동 반려
+# 채점 탈락 원고도 PR 로 올린다(라벨 탈락) — 사람이 /주제 로 그 주 글을 살릴 수 있게. 그래서 탈락은 빨간불이 아니다.
 #
-# 게이트는 사람이 아니라 scripts/grade.py 다 — 결정론 검사(말투 7금지 + 지어낸 수치 대조)
-# + LLM 이진 판정. 둘 다 통과 못 하면 drafts/ 에만 남고 아무것도 나가지 않는다.
+# GITHUB_TOKEN 이 만든 PR 은 봇 자신의 이벤트로는 워크플로를 깨우지 않지만, 사람의 merge·댓글은 깨운다
+# (docs/research-2026-09-10.md §3). 그래서 검수 표면이 PR 이어도 된다.
 #
-# GITHUB_TOKEN 으로 만든 PR 은 pull_request 워크플로를 트리거하지 않는다
-# (docs/research-2026-09-10.md §3). 그래서 채점·머지를 이 job 안에서 끝낸다.
-#
-# ⚠️ 최초 1회: CLAUDE_CODE_OAUTH_TOKEN(필수) · THREADS_TOKEN(없으면 DRY_RUN)
+# ⚠️ Secret: CLAUDE_CODE_OAUTH_TOKEN(필수) · TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID(없으면 알림만 생략)
 on:
-  # 수요일 09:00 KST — 주제를 안 주면 최신 다이제스트 1번 항목으로 쓴다 (--from-digest 1)
+  # 수요일 09:00 KST. 증분 2(토 06:00 큐 채움)가 오면 이 cron 은 그쪽으로 옮긴다
   schedule:
     - cron: "0 0 * * 3"
   workflow_dispatch:
     inputs:
       topic:
-        description: "글 주제 한 줄 (비우면 최신 다이제스트 1번 항목)"
+        description: "글 주제 한 줄 (비우면 최신 다이제스트 후보 1번)"
         required: false
         type: string
       sources:
-        description: "출처 URL 또는 repo 내 파일 경로, 공백으로 구분"
+        description: "출처 URL 또는 repo 내 파일 경로, 공백으로 구분 (topic 을 줬을 때 필수)"
         required: false
         type: string
-      merge:
-        description: "채점 통과 시 즉시 머지"
-        type: boolean
-        default: true
 
 permissions:
   contents: write
@@ -42,18 +39,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      # 재실행("Re-run failed jobs"/"Re-run all jobs")은 **트리거 시점의 github.sha** 를 다시
-      # 체크아웃한다 — 앞선 시도가 머지한 글이 그 트리에는 없다. 그러면:
-      #   --from-digest 경로: write_post.written_urls() 가 방금 쓴 글을 못 봐서
-      #                       pick_from_digest 가 같은 항목을 다시 고른다.
-      #   --topic 경로:       애초에 written_urls() 를 안 타서 같은 주제를 그대로 다시 쓴다.
-      # 둘 다 같은 slug 로 글을 덮어쓰고 머지하고, 스레드가 한 번 더 나간다.
-      # 체인이 중간에 끊긴 뒤의 재실행은 더 나쁘다 — 1번 글이 이미 라이브인데 러너는 그걸 모른다.
-      # 낡은 트리로는 "이미 나갔나"를 판단할 수 없다. 그러니 조용히 다시 내지 말고 여기서 죽는다.
+      # 재실행은 트리거 시점의 github.sha 를 다시 체크아웃한다 — 같은 주제로 같은 slug 의 PR 을 하나 더 열 수 있다.
+      # 아무것도 안 열렸으면 'Run workflow' 로 새로 돌려라.
       - name: 재실행 거부 (낡은 체크아웃)
         if: github.run_attempt != 1
         run: |
-          echo "::error title=재실행 금지::재실행은 머지 이전 커밋을 체크아웃해 같은 글을 두 번 발행한다. 아무것도 안 나갔으면 'Run workflow' 로 새로 돌려라(최신 main 을 체크아웃한다). 스레드 체인이 끊겼으면 publish-thread 워크플로에 draft·reply_to·start 를 넣어 이어 붙여라"
+          echo "::error title=재실행 금지::재실행은 낡은 트리에서 같은 원고 PR 을 하나 더 연다. 'Run workflow' 로 새로 돌려라"
           exit 1
 
       - uses: actions/checkout@v7
@@ -65,12 +56,12 @@ jobs:
         run: |
           python scripts/grade.py --selftest
           python scripts/write_post.py --selftest
-          python scripts/write_thread.py --selftest
+          python scripts/review_cmd.py --selftest
 
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
 
-      # 주제를 안 줬을 때: 다이제스트 PR 이 아직 안 머지됐어도 최신 digest/* 브랜치의 파일로 고른다.
+      # 주제를 안 줬을 때: 최신 digest/* 브랜치의 파일로 후보를 고른다.
       - name: Fetch latest digest branch
         if: inputs.topic == ''
         run: |
@@ -79,25 +70,19 @@ jobs:
           LATEST=$(git for-each-ref --sort=-committerdate --format='%(refname:short)' 'refs/remotes/origin/digest/*' | head -1 || true)
           if [ -z "$LATEST" ]; then
             # 여기서 그냥 진행하면 main 에 추적돼 있는 낡은 digest/x-*.md 로 글을 써 버린다.
-            # 조용한 성공 금지 — 재료가 없으면 글을 만들지 않는다.
             echo "::error title=다이제스트 없음::digest/* 브랜치가 하나도 없다. daily-digest 가 도는지 확인해라"
             exit 1
           fi
           git checkout "$LATEST" -- digest/ && git reset -q digest/
           echo "다이제스트 브랜치 $LATEST 에서 digest/ 가져옴"
 
-      - name: Write, grade, publish post
+      - name: Write, grade, open review PR
         id: post
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           TOPIC: ${{ inputs.topic }}
           SOURCES: ${{ inputs.sources }}
-          # `inputs` 는 workflow_dispatch 에서만 채워진다. schedule 로 돌면 null 이고
-          # GitHub 표현식은 타입이 다르면 숫자로 캐스팅해(null→0, false→0)
-          # `inputs.merge != false` 가 **false** 가 된다 — 2026-09-16 cron 로그에 `MERGE: false`.
-          # 그러면 글은 머지 안 된 PR 에 갇히는데 스레드는 그대로 나가서 404 링크를 단다.
-          MERGE: ${{ github.event_name != 'workflow_dispatch' || inputs.merge }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -109,48 +94,31 @@ jobs:
           else
             ARGS+=(--from-digest 1)
           fi
-          [ "$MERGE" = "true" ] && ARGS+=(--merge)
           python scripts/write_post.py "${ARGS[@]}" --publish | tee out.txt
-          SLUG=$(grep -o 'content/[^ ]*\.mdx' out.txt | head -1 || true)
-          echo "slug=$SLUG" >> "$GITHUB_OUTPUT"
-          echo "merged=$MERGE" >> "$GITHUB_OUTPUT"
+          PR=$(grep -o 'https://github.com/[^ ]*/pull/[0-9]*' out.txt | tail -1 || true)
+          VERDICT=$(grep -oE '^(PASS|FAIL) →' out.txt | head -1 | cut -d' ' -f1 || true)
+          echo "pr=$PR" >> "$GITHUB_OUTPUT"
+          echo "verdict=${VERDICT:-?}" >> "$GITHUB_OUTPUT"
+          [ -n "$PR" ] || { echo "::error title=PR 없음::원고 PR 이 열리지 않았다 — 위 로그를 보라"; exit 1; }
 
-      # 여기 오면 글은 이미 머지돼 사이트에 나갔다. 스레드가 채점에서 떨어진 것과
-      # 발행이 중간에 끊긴 것은 심각도가 다른데 둘 다 exit 1 이라 워크플로가 똑같이
-      # 빨간불이었다. 아래 판정 스텝에서 갈라 낸다.
-      - name: Thread from post
-        id: thread
-        if: steps.post.outputs.slug != '' && steps.post.outputs.merged == 'true'
-        continue-on-error: true
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
-          SLUG: ${{ steps.post.outputs.slug }}
-        run: python scripts/write_thread.py --post "$SLUG" --publish
-
-      # 머지 안 한 실행(--merge 없이 dispatch)은 스레드를 안 낸다 — 글이 사이트에 없다
-      - name: 머지 안 했으면 스레드 생략을 알린다
-        if: steps.post.outputs.slug != '' && steps.post.outputs.merged != 'true'
-        run: echo "::warning title=스레드 생략::머지하지 않아 글이 사이트에 없다. PR 을 머지한 뒤 publish-thread 워크플로로 스레드를 내라"
-
-      # ponytail: 러너는 매번 새 체크아웃이고 .FAIL.md 는 git 에 없다 —
-      # 파일이 있으면 이번 실행이 만든 것이다. 더 정확히 보려면 write_thread 가
-      # 종료 코드를 나눠 줘야 하는데, 그건 이 한 줄보다 큰 변경이다.
-      - name: 스레드 실패 갈라내기
-        if: steps.thread.outcome == 'failure'
-        run: |
-          set -euo pipefail
-          if compgen -G "drafts/threads/*.FAIL.md" > /dev/null; then
-            echo "::warning title=스레드 채점 탈락::글은 게시됐고 스레드만 안 나갔다. 초안을 고쳐 publish-thread 워크플로의 draft 입력으로 재시도해라"
-          else
-            echo "::error title=스레드 발행 실패::채점 탈락이 아니다. 체인이 끊겼으면 로그의 '이어붙이기' 명령으로 이어 붙여라"
-            exit 1
-          fi
-
-      - name: Keep thread draft
-        if: always() && steps.thread.outcome != 'skipped'
-        uses: actions/upload-artifact@v4
+      - name: Telegram
+        if: always() && steps.post.outputs.pr != ''
+        uses: ./.github/actions/telegram
         with:
-          name: thread-draft
-          path: drafts/threads/
-          if-no-files-found: ignore
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            📝 블로그 원고 PR — 채점 ${{ steps.post.outputs.verdict }}
+            merge=승인 · close=반려 · /변경 <지시> · /주제 N
+            ${{ steps.post.outputs.pr }}
+
+      # PR 이 안 열렸으면 그 주 블로그가 없다 — 침묵이 아니라 폰에 한 줄이 와야 한다 (한도·토큰·다이제스트 없음)
+      - name: Telegram (실패)
+        if: failure() && steps.post.outputs.pr == ''
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ❌ auto-post 실패 — 원고 PR 이 열리지 않았다 (한도·토큰·다이제스트 확인)
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

@@ -1,0 +1,22 @@
+name: telegram
+description: Telegram 으로 한 줄 알림. Secret 이 없으면 조용히 생략한다 — 알림은 부가가치지 전제가 아니다.
+inputs:
+  token: { description: "TELEGRAM_BOT_TOKEN", required: false, default: "" }
+  chat: { description: "TELEGRAM_CHAT_ID", required: false, default: "" }
+  text: { description: "보낼 문장", required: true }
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        TG_TOKEN: ${{ inputs.token }}
+        TG_CHAT: ${{ inputs.chat }}
+        TG_TEXT: ${{ inputs.text }}
+      run: |
+        if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
+          echo "::notice title=Telegram 생략::TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID 가 없다 — 9/21 손작업"
+          exit 0
+        fi
+        curl -sS -X POST "https://api.telegram.org/bot$TG_TOKEN/sendMessage" \
+          -d chat_id="$TG_CHAT" -d disable_web_page_preview=true --data-urlencode text="$TG_TEXT" \
+          -o /dev/null -w "telegram HTTP %{http_code}\n"
