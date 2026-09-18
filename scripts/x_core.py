@@ -173,7 +173,11 @@ def extract_core(clusters: list[dict]) -> list[str] | None:
 def render(clusters: list[dict], cores: list[str] | None) -> str:
     out = []
     for i, c in enumerate(clusters):
-        head = cores[i] if cores else c["lead"]["title"]
+        # `(원문만 확인됨)` 같은 자리표시는 원문 → URL 슬러그로 바꾸고, 그래도 없으면 뺀다
+        head = cd.headline(cores[i] if cores else None, c["lead"]["title"], c["lead"]["url"])
+        if head is None:
+            print(f"제목 없는 군집 제외: {c['lead']['url']}", file=sys.stderr)
+            continue
         who = f"{c['lead']['source']}" + (f" +{c['n'] - 1}" if c["n"] > 1 else "")
         out += [f"- [ ] **{head}**",
                 f"      `{who}` · {c['lead']['url']}",
@@ -231,6 +235,8 @@ def selftest() -> int:
     assert [c["lead"]["source"] for c in pick_top(cluster(many), 4)].count("X @z") == PER_AUTHOR
     md = render(cl, None)
     assert md.count("- [ ]") == 2 and "+1" in md and "> " not in md   # 기계 논평은 `>` 에 못 들어간다
+    md2 = render(cl, ["(원문만 확인됨)", "점심 사진"])   # 자리표시 → 원문 제목, 정상 요약은 그대로
+    assert "**GPT-6 https://openai.com/gpt6**" in md2 and "**점심 사진**" in md2, md2
     print("selftest ok")
     return 0
 

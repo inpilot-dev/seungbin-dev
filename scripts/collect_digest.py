@@ -386,11 +386,40 @@ def summarize(items: list[dict]) -> list[str] | None:
         return None
 
 
+# ponytail: 괄호로만 된 제목은 전부 자리표시로 본다. LLM 이 변형을 지어낸다(`(원문만 확인됨)` 실측) — 목록으로는 못 따라간다.
+# 괄호뿐인 진짜 제목은 원제목·URL 로 대체되고, 셋 다 못 쓸 때만 버려진다(리뷰 2026-09-18, 드묾으로 판단)
+PLACEHOLDER = re.compile(r"\(.*\)")
+
+
+def headline(summary: str | None, title: str, url: str) -> str | None:
+    """다이제스트 한 줄의 제목. 요약 → 원제목 → URL 슬러그 순으로 쓸 수 있는 첫 값.
+
+    2026-09-18: 9/17 다이제스트 36건 중 3건이 `(제목만 확인됨)`·`(불완전 텍스트)` 였다.
+    프롬프트가 "모르면 자리표시를 써라"라고 시키니 요약기가 그대로 따른다. 그런데 그
+    항목엔 수집 단계의 원제목이 이미 있다 — 자리표시로 덮을 이유가 없다.
+    셋 다 못 쓰면 None: 사람이 고를 수 없는 후보라 싣지 않는다.
+    """
+    for cand in (summary, title):
+        cand = (cand or "").strip()
+        if cand and not PLACEHOLDER.fullmatch(cand):
+            return cand
+    # ponytail: 슬러그는 마지막 경로 조각 하나만 본다. 제목이 빈 항목은 파서가 이미
+    # 거르므로 여기까지 오는 일이 드물다 — 잦아지면 원문 <title> 을 받아 쓴다.
+    seg = url.split("?")[0].split("#")[0].rstrip("/").rsplit("/", 1)[-1]
+    slug = re.sub(r"[-_]+", " ", re.sub(r"\.\w{2,5}$", "", seg)).strip()
+    return clean(slug) if re.search(r"[^\W\d_]{3}", slug) else None
+
+
 def render(items: list[dict], summaries: list[str] | None) -> str:
-    out = []
+    out, dropped = [], 0
     for i, it in enumerate(items):
-        headline = summaries[i] if summaries else it["title"]
-        out += [f"- [ ] **{headline}**", f"      `{it['source']}` · {it['url']}", ""]
+        head = headline(summaries[i] if summaries else None, it["title"], it["url"])
+        if head is None:
+            dropped += 1
+            continue
+        out += [f"- [ ] **{head}**", f"      `{it['source']}` · {it['url']}", ""]
+    if dropped:
+        print(f"제목을 못 만든 항목 {dropped}건 제외", file=sys.stderr)
     return "\n".join(out)
 
 
@@ -521,6 +550,19 @@ def selftest() -> int:
 
     # 요약 줄 수가 안 맞으면 정렬이 어긋나므로 통째로 버려야 한다
     assert render(items[:2], None).count("- [ ]") == 2
+
+    # 자리표시 제목은 다이제스트에 실리지 않는다 — 원제목 → URL 슬러그 → 제외 (2026-09-18)
+    assert headline("GPT-6 출시", "GPT-6 is out", "https://a.com/x") == "GPT-6 출시"  # 정상은 그대로
+    assert headline("(제목만 확인됨)", "Stay Human", "https://a.com/x") == "Stay Human"
+    assert headline(" (불완전 텍스트) ", "", "https://a.com/p/ai-shuts-down/") == "ai shuts down"
+    assert headline("(제목만 확인됨)", "(원문만 확인됨)", "https://x.com/a/status/123") is None
+    ph = [{"source": "S", "title": "Real Title", "url": "https://a.com/1"},
+          {"source": "S", "title": "", "url": "https://a.com/2"},
+          {"source": "S", "title": "ok", "url": "https://a.com/3"}]
+    md = render(ph, ["(제목만 확인됨)", "(불완전 텍스트)", "요약 셋"])
+    # write_post·write_thread 가 쓰는 정규식 그대로 — 줄 형식이 안 바뀌었음을 같이 본다
+    got = re.findall(r"^- \[[ x]\] \*\*(.+?)\*\*\n\s*`[^`]*` · (\S+)", md, re.M)
+    assert got == [("Real Title", "https://a.com/1"), ("요약 셋", "https://a.com/3")], got
 
     # Reddit .rss는 표준 Atom — 전용 파서 없이 parse_feed가 먹어야 한다
     reddit = b"""<feed xmlns="http://www.w3.org/2005/Atom">
