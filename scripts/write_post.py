@@ -58,13 +58,34 @@ def html_to_text(raw: bytes) -> str:
     return re.sub(r"\s+", " ", html.unescape(s)).strip()
 
 
+SRC_MIN = 500          # 이보다 짧으면 본문이 아니다 — 403 페이지·JS 껍데기·리다이렉트 안내
+MAX_PROBES = 20        # 후보 가독성 탐침 상한. fetch 는 건당 최대 20초라 여기서 막아야 잡이 안 늘어진다
+_SRC_CACHE: dict[str, tuple[str, str]] = {}
+
+
 def load_source(ref: str) -> tuple[str, str]:
-    """(라벨, 본문). URL 이면 받아서 텍스트만, 아니면 로컬 파일."""
+    """(라벨, 본문). URL 이면 받아서 텍스트만, 아니면 로컬 파일. 한 번 읽은 건 캐시 — 후보 탐침 때 읽은
+    본문을 생성 때 다시 안 받는다."""
+    if ref in _SRC_CACHE:
+        return _SRC_CACHE[ref]
     if ref.startswith("http"):
         raw = cd.fetch(ref)
-        return ref, (html_to_text(raw) if raw else "")[:SRC_MAX]
-    p = Path(ref)
-    return str(p), p.read_text(encoding="utf-8")[:SRC_MAX]
+        out = (ref, (html_to_text(raw) if raw else "")[:SRC_MAX])
+    else:
+        p = Path(ref)
+        out = (str(p), p.read_text(encoding="utf-8")[:SRC_MAX])
+    _SRC_CACHE[ref] = out
+    return out
+
+
+def readable(url: str) -> bool:
+    """출처를 실제로 읽을 수 있나. 2026-09-18 실측: 9/18 후보 1번(Reddit)이 403 껍데기 6자라 cron 이
+    "출처가 비었다" 로 죽었다. 사람이 고르는 후보에 못 읽는 출처가 있으면 /주제 N 이 헛돈다."""
+    try:
+        return len(load_source(url)[1]) >= SRC_MIN
+    except Exception as e:
+        print(f"  출처 읽기 예외: {url[:80]} — {e}", file=sys.stderr)
+        return False
 
 
 DIGEST_DIR = ROOT / "digest"
@@ -136,6 +157,7 @@ def candidates(n: int = CANDIDATES) -> list[tuple[str, str]]:
                          f"(> {DIGEST_MAX_AGE}일) — 글을 만들지 않는다")
     files = [f for d, f in dated if (today - d).days <= DIGEST_MAX_AGE]
     fit: list[tuple[str, str]] = []
+    probes = 0
     for f in files:
         items = re.findall(r"^- \[[ x]\] \*\*(.+?)\*\*\n[ \t]*`[^`]*`[^\n]*?(https?://\S+)",
                            f.read_text(encoding="utf-8"), re.M)
@@ -149,7 +171,16 @@ def candidates(n: int = CANDIDATES) -> list[tuple[str, str]]:
         got = [(t, u) for (t, u), o in zip(named, ok) if o]
         print(f"{f.name}: {len(items)}건 중 이미 쓴 출처 {len(items) - len(fresh)}건 · 제목 없는 {len(fresh) - len(named)}건 제외, "
               f"주제 적합 {len(got)}건", file=sys.stderr)
-        fit += [c for c in got if c not in fit]
+        for c in got:
+            if c in fit or probes >= MAX_PROBES:
+                continue
+            probes += 1
+            if not readable(c[1]):
+                print(f"  출처 못 읽음 → 후보 제외: {c[1][:80]}", file=sys.stderr)
+                continue
+            fit.append(c)
+            if len(fit) >= n:
+                break
         if len(fit) >= n:        # 파일마다 LLM 판정 한 번이다 — 채웠으면 더 안 묻는다
             break
     return fit[:n]
@@ -431,8 +462,9 @@ def selftest() -> int:
     import tempfile
     global DIGEST_DIR, CONTENT
     DIGEST_DIR, CONTENT = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
-    global on_topic
+    global on_topic, readable
     on_topic = lambda titles: [t in ("첫 항목", "둘째 항목") for t in titles]   # noqa: E731  LLM 없이 판정 흉내
+    readable = lambda url: "blocked" not in url   # noqa: E731  네트워크 없이 가독성 흉내
     today = datetime.now(KST).date()
     (DIGEST_DIR / f"x-{today}.md").write_text(
         "- [ ] **정치 뉴스**\n      `Techmeme` · https://ex.com/0\n\n"
@@ -470,8 +502,11 @@ def selftest() -> int:
     (DIGEST_DIR / f"{today}.md").write_text((DIGEST_DIR / f"{today}.md").read_text(encoding="utf-8")
         + "\n- [ ] **(불완전 텍스트)**\n      `bsky` · https://ex.com/d\n", encoding="utf-8")
     on_topic = lambda titles: [t != "정치 뉴스" for t in titles]   # noqa: E731  자리표시는 LLM 까지 안 간다
+    (DIGEST_DIR / f"{today}.md").write_text(
+        "- [ ] **막힌 항목**\n      `r/x` · https://ex.com/blocked\n\n" + (DIGEST_DIR / f"{today}.md").read_text(encoding="utf-8"),
+        encoding="utf-8")
     c = candidates(5)
-    assert c == [("첫 항목", "https://ex.com/a"), ("둘째 항목", "https://ex.com/c")], c   # 본 다이제스트 먼저 · 중복 제거 · 자리표시 제외
+    assert c == [("첫 항목", "https://ex.com/a"), ("둘째 항목", "https://ex.com/c")], c   # 본 다이제스트 먼저 · 중복 제거 · 자리표시·못 읽는 출처 제외
     body = pr_body("첫 항목", {"title": "T", "description": "D"}, False, ["규칙 1 위반"], c, "https://ex.com/a")
     assert body.startswith("## 주제 후보") and "1. **첫 항목**  ← 이번 원고" in body and "FAIL — 규칙 1 위반" in body
     assert "/주제 N" in body and "2. **둘째 항목**" in body
