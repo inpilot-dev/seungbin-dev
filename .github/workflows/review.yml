@@ -1,0 +1,214 @@
+name: review
+
+# 검수 표면 = GitHub PR (docs/adr/0001). 사람의 행동 셋에 반응한다.
+#   ① 블로그 원고 PR merge   → Threads 원고를 만들어 채점하고 **또 PR 로** 올린다 (파생, 수시 검수)
+#   ② Threads 원고 PR merge  → Threads 에 발행한다 (v0: merge 즉시. 채널 시각 발행은 증분 2)
+#   ③ 원고 PR 댓글 /변경·/주제 → 재생성해 같은 PR 브랜치에 밀어 넣고 결과를 댓글로 남긴다
+# 저장소는 공개다 — 댓글 명령은 OWNER 만 받는다. 아니면 누구든 sonnet 생성을 돌릴 수 있다.
+on:
+  pull_request:
+    types: [closed]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: review-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  derive:
+    name: 블로그 승인 → Threads 원고 PR
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, '원고:blog')
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+
+      # 탈락 원고(drafts/)를 merge 한 경우엔 게시된 글이 없다 — 파생할 것도 없다
+      - name: 머지된 글 찾기
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          F=$(gh pr view "$PR" --json files --jq '.files[].path' | grep -E '^content/.*\.mdx$' | head -1 || true)
+          [ -n "$F" ] || echo "::notice title=파생 없음::content/ 글이 없는 PR 이다 (탈락 원고 merge 등)"
+          echo "post=$F" >> "$GITHUB_OUTPUT"
+
+      - name: Install Claude Code CLI
+        if: steps.pick.outputs.post != ''
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Threads 원고 생성 · 채점
+        if: steps.pick.outputs.post != ''
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          POST: ${{ steps.pick.outputs.post }}
+        run: python scripts/write_thread.py --post "$POST" || echo "::warning title=스레드 채점 탈락::탈락 원고로 PR 을 연다"
+
+      - name: Threads 원고 PR
+        id: pr
+        if: steps.pick.outputs.post != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          POST: ${{ steps.pick.outputs.post }}
+          BLOG_PR: ${{ github.event.pull_request.html_url }}
+        run: |
+          set -euo pipefail
+          SLUG=$(basename "$POST" .mdx)
+          D=""; for f in "drafts/threads/$SLUG.md" "drafts/threads/$SLUG.FAIL.md"; do [ -f "$f" ] && { D="$f"; break; }; done
+          [ -n "$D" ] || { echo "::error title=초안 없음::write_thread 가 파일을 안 남겼다"; exit 1; }
+          LABELS=(--label "원고:thread"); case "$D" in *.FAIL.md) LABELS+=(--label "탈락");; esac
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "thread/$SLUG"
+          git add drafts/threads
+          git commit -m "thread: $SLUG (블로그 승인 파생 · 채점 $( [[ "$D" == *.FAIL.md ]] && echo 탈락 || echo 통과 ))
+
+          Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+          git push -u origin "thread/$SLUG"
+          {
+            echo "## Threads 원고 — 블로그 $BLOG_PR 의 파생"; echo
+            echo "발행 시각: 승인(merge) 즉시 (증분 2 에서 수 09:00 로 옮긴다). 체인은 \`---\` 로 나뉜다."; echo
+            echo '```'; cat "$D"; echo '```'; echo
+            echo "## 검수"; echo
+            echo "- **승인** = merge → Threads 발행"; echo "- **반려** = close + 사유 한 줄"
+            echo "- 채점 탈락(라벨 탈락)이면 merge 해도 나가지 않는다 — close 하거나, 블로그 글을 고쳐 publish-thread 로 다시 만든다"
+            echo "- 결정이 없으면 보류 — 두 슬롯을 지나면 자동 반려"; echo
+            echo "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
+          } > body.md
+          URL=$(gh pr create --title "thread: $SLUG" --body-file body.md "${LABELS[@]}")
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+          echo "verdict=$( [[ "$D" == *.FAIL.md ]] && echo FAIL || echo PASS )" >> "$GITHUB_OUTPUT"
+
+      - name: Telegram
+        if: steps.pr.outputs.url != ''
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            🧵 Threads 원고 PR — 채점 ${{ steps.pr.outputs.verdict }} (블로그 승인 파생)
+            merge=발행 · close=반려
+            ${{ steps.pr.outputs.url }}
+
+  publish-thread:
+    name: Threads 승인 → 발행
+    if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, '원고:thread')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: 재실행 거부 (중복 발행)
+        if: github.run_attempt != 1
+        run: |
+          echo "::error title=재실행 금지::재실행은 체인을 처음부터 다시 올린다. 끊긴 체인은 publish-thread 워크플로에 draft·reply_to·start 를 넣어 이어 붙여라"
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: 머지된 초안 찾기
+        id: pick
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          D=$(gh pr view "$PR" --json files --jq '.files[].path' | grep -E '^drafts/threads/.*\.md$' | head -1 || true)
+          [ -n "$D" ] || { echo "::error title=초안 없음::drafts/threads/ 파일이 없는 PR 이다"; exit 1; }
+          echo "draft=$D" >> "$GITHUB_OUTPUT"
+      # .FAIL 초안은 스크립트가 거부한다(exit 1) — merge 해도 안 나간다
+      - name: 발행
+        id: pub
+        env:
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          DRAFT: ${{ steps.pick.outputs.draft }}
+        run: |
+          set -euo pipefail
+          python scripts/write_thread.py --draft "$DRAFT" --publish | tee out.txt
+          echo "link=$(grep -o 'https://www.threads.com/[^ ]*' out.txt | head -1 || true)" >> "$GITHUB_OUTPUT"
+      - name: Telegram
+        if: always()
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ${{ steps.pub.outcome == 'success' && '✅ Threads 발행됨' || '❌ Threads 발행 실패 — 실행 로그를 보라' }}
+            ${{ steps.pub.outputs.link || github.event.pull_request.html_url }}
+
+  command:
+    name: 댓글 /변경 · /주제
+    if: >-
+      github.event_name == 'issue_comment' && github.event.issue.pull_request != null
+      && github.event.comment.author_association == 'OWNER'
+      && contains(github.event.issue.labels.*.name, '원고:blog')
+      && (startsWith(github.event.comment.body, '/변경') || startsWith(github.event.comment.body, '/주제'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+      - name: 재생성
+        id: regen
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.issue.number }}
+          # ${{ }} 를 run 본문에 끼우면 스크립트 인젝션이다. env 를 거치면 셸이 값으로만 본다.
+          COMMENT: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          BRANCH=$(gh pr view "$PR" --json headRefName --jq .headRefName)
+          gh pr view "$PR" --json body --jq .body > pr_body.md
+          git fetch origin "$BRANCH"
+          # PR 의 변경 파일은 GitHub 이 안다. 로컬 diff 는 shallow clone 이라 merge-base 가 없고,
+          # 두 점 diff 는 그사이 main 에 머지된 남의 글을 "삭제" 로 오판한다.
+          MDX=$(gh pr view "$PR" --json files --jq '.files[].path' | grep -E '^(content|drafts)/[^/]+\.mdx$' | head -1 || true)
+          if [ -n "$MDX" ]; then git show "origin/$BRANCH:$MDX" > cur.mdx; SLUG=$(basename "$MDX" .mdx); else : > cur.mdx; SLUG="post"; fi
+          set +e
+          python scripts/review_cmd.py run --comment "$COMMENT" --pr-body pr_body.md --mdx cur.mdx --mdx-path "$MDX" --slug "$SLUG" --onto "$BRANCH" 2>&1 | tee out.txt
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "rc=$RC" >> "$GITHUB_OUTPUT"
+          {
+            case "$RC" in
+              0) echo "✅ 재생성 통과 — 이 PR 브랜치를 갱신했다. 파일 탭에서 확인하고 merge(승인) 또는 close(반려)";;
+              1) echo "⚠️ 재생성했지만 채점 탈락 — 브랜치에 탈락 원고가 올라갔다. \`/변경\` 으로 한 번 더 지시하거나 \`/주제 N\` 으로 바꿔라";;
+              3) grep '^REJECT:' out.txt | sed 's/^REJECT: /❌ /';;
+              *) echo "❌ 재생성 실패 (exit $RC) — 실행 로그를 보라";;
+            esac
+            echo; echo '<details><summary>로그</summary>'; echo; echo '```'; tail -40 out.txt; echo '```'; echo '</details>'
+          } > comment.md
+          gh pr comment "$PR" --body-file comment.md
+          # 라벨 정리: 통과면 탈락 라벨을 떼고, 탈락이면 붙인다
+          if [ "$RC" = 0 ]; then gh pr edit "$PR" --remove-label "탈락" 2>/dev/null || true; fi
+          if [ "$RC" = 1 ]; then gh pr edit "$PR" --add-label "탈락" 2>/dev/null || true; fi
+      - name: Telegram
+        if: always()
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ${{ steps.regen.outputs.rc == '0' && '✅ 재생성 통과' || steps.regen.outputs.rc == '1' && '⚠️ 재생성 탈락' || '❌ 재생성 거부/실패' }} — PR #${{ github.event.issue.number }}
+            ${{ github.event.issue.html_url }}

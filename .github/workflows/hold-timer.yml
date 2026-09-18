@@ -1,0 +1,54 @@
+name: hold-timer
+
+# 결정 없는 원고는 나가지 않는다 — 그리고 영원히 열려 있지도 않는다 (2026-09-18 계획, Q5·Q9).
+#   슬롯(일 20:00)을 한 번 지나도 결정이 없으면 라벨 `보류` + 댓글 한 줄.
+#   두 슬롯을 지나면(열린 지 9일 이상) close + 라벨 `만료` = 자동 반려. 다이제스트 주제는 2주면 식는다.
+# 매일 21:00 KST (12:00 UTC) 에 훑는다. 슬롯 직후라 "오늘 슬롯에서 안 본 것" 이 바로 보류가 된다.
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: 보류 · 만료
+        id: sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          NOW=$(date -u +%s)
+          for L in "원고:blog" "원고:thread"; do
+            gh pr list --state open --label "$L" --limit 50 --json number,createdAt,labels,title \
+              --jq '.[] | "\(.number)\t\(.createdAt)\t\([.labels[].name]|join(","))\t\(.title)"'
+          done | sort -u | while IFS=$'\t' read -r N C LABELS T; do
+            AGE=$(( (NOW - $(date -u -d "$C" +%s)) / 86400 ))
+            if [ "$AGE" -ge 9 ]; then
+              gh pr close "$N" --comment "만료 — 두 슬롯을 지나도 결정이 없어 자동 반려한다(보류는 다음 슬롯 1회까지, 2026-09-18 계획). 다시 쓰려면 새 PR 이다."
+              gh pr edit "$N" --add-label "만료" >/dev/null 2>&1 || true
+              echo "만료 #$N ($AGE일) $T"
+            elif [ "$AGE" -ge 2 ] && ! grep -q '보류' <<<"$LABELS"; then
+              gh pr edit "$N" --add-label "보류" >/dev/null
+              gh pr comment "$N" --body "보류 — 슬롯을 지났는데 결정이 없다. 다음 슬롯(일 20:00)까지 결정이 없으면 자동 반려된다."
+              echo "보류 #$N ($AGE일) $T"
+            fi
+          done | tee sweep.txt
+          { echo "msg<<EOF"; cat sweep.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
+      - name: Telegram
+        if: steps.sweep.outputs.msg != ''
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ⏳ 결정 없는 원고
+            ${{ steps.sweep.outputs.msg }}

@@ -7,26 +7,43 @@ scripts/ 의 다섯 도구가 전부 같은 두 줄을 복붙하고 있어서 �
 from __future__ import annotations
 
 import json
+import os
+import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.request
 
 CLAUDE_MODEL = "claude-haiku-4-5"
 OLLAMA_MODEL = "qwen2.5:7b-instruct"
 OLLAMA_URL = "http://localhost:11434/api/generate"
+# 2026-09-18 실측: 구독 사용량 한도에 걸리면 `claude -p` 가 exit 1 로 **즉시** 죽고 사유는 stdout 에 쓴다.
+# stderr 만 찍던 로그는 빈 줄이었고, 호출자는 "주제에 맞는 항목이 없다" 로 오진했다. 한도는 시간이 풀어 주는
+# 문제라 몇 분 뒤 재시도한다. 로컬 테스트가 느려지지 않게 횟수는 env 로 끈다 (LLM_LIMIT_RETRIES=0).
+LIMIT_RE = re.compile(r"limit|rate|429|overloaded|capacity|too many", re.I)
+LIMIT_RETRIES = int(os.environ.get("LLM_LIMIT_RETRIES", "2"))
+LIMIT_WAIT_SEC = 300
 
 
 def ask(prompt: str, timeout: int = 300, model: str = CLAUDE_MODEL) -> str | None:
     if shutil.which("claude"):
-        try:
-            r = subprocess.run(["claude", "-p", "--model", model], input=prompt,
-                               capture_output=True, text=True, timeout=timeout)
-            if r.returncode == 0 and r.stdout.strip():
-                return r.stdout
-            print(f"claude -p 실패 (exit {r.returncode}): {r.stderr[:200]}", file=sys.stderr)
-        except Exception as e:
-            print(f"claude -p 예외 ({e})", file=sys.stderr)
+        for attempt in range(LIMIT_RETRIES + 1):
+            try:
+                r = subprocess.run(["claude", "-p", "--model", model], input=prompt,
+                                   capture_output=True, text=True, timeout=timeout)
+                if r.returncode == 0 and r.stdout.strip():
+                    return r.stdout
+                msg = (r.stderr.strip() or r.stdout.strip())[:200]
+                print(f"claude -p 실패 (exit {r.returncode}): {msg}", file=sys.stderr)
+                if attempt < LIMIT_RETRIES and LIMIT_RE.search(msg):
+                    print(f"  한도로 보인다 — {LIMIT_WAIT_SEC}초 뒤 재시도 ({attempt + 1}/{LIMIT_RETRIES})", file=sys.stderr)
+                    time.sleep(LIMIT_WAIT_SEC)
+                    continue
+                break
+            except Exception as e:
+                print(f"claude -p 예외 ({e})", file=sys.stderr)
+                break
     try:
         req = urllib.request.Request(
             OLLAMA_URL,
