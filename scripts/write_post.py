@@ -129,6 +129,22 @@ def written_urls() -> set[str]:
             for u in re.findall(r"https?://[^\s\"'`<>)\]]+", f.read_text(encoding="utf-8"))}
 
 
+def queued_urls() -> set[str]:
+    """열린 원고 PR 이 이미 잡은 출처. PR 이 큐다 — 같은 다이제스트로 두 번 돌면(수동 dispatch·재실행) 같은 1번을
+    또 고른다. 2026-09-18 실측: 5분 간격 두 실행이 같은 출처로 #42·#43 을 열었다. PR 본문의 `← 이번 원고` 줄
+    아래 URL 만 센다(후보 5개 전부를 빼면 다음 실행이 제안할 게 없다). gh 가 없거나 실패하면 빈 집합 — 중복은
+    사람이 close 하면 되지만, 여기서 죽으면 그 주 원고가 없다."""
+    try:
+        r = subprocess.run(["gh", "pr", "list", "--state", "open", "--label", "원고:blog", "--limit", "50", "--json", "body"],
+                           cwd=ROOT, capture_output=True, text=True, timeout=30)
+        bodies = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else []
+    except Exception as e:
+        print(f"열린 원고 PR 조회 실패 — 중복 제외 없이 진행: {e}", file=sys.stderr)
+        return set()
+    return {norm_url(u) for b in bodies
+            for u in re.findall(r"← 이번 원고\s*\n\s*(https?://\S+)", b.get("body") or "")}
+
+
 def candidates(n: int = CANDIDATES) -> list[tuple[str, str]]:
     """가장 최근 digest/*.md 에서 **주제에 맞고 아직 안 쓴** 항목을 새 것부터 최대 n개 → [(제목, URL)].
     검수자가 PR 본문의 이 번호로 고른다(`/주제 N`). 1번은 미리 렌더해 원고로 붙인다.
@@ -141,7 +157,10 @@ def candidates(n: int = CANDIDATES) -> list[tuple[str, str]]:
     main 에 추적 파일로 남은 낡은 digest 로 조용히 글을 쓰던 구멍이 여기였다.
     날짜 없는 파일명은 수집 산출물이 아니므로 아예 후보에서 뺀다.
     """
-    done = written_urls()
+    queued = queued_urls()
+    done = written_urls() | queued
+    if queued:
+        print(f"열린 원고 PR 이 잡은 출처 {len(queued)}건 제외", file=sys.stderr)
     today = datetime.now(KST).date()
     # 같은 날짜면 본 다이제스트(`2026-09-16.md`)가 X 다이제스트(`x-2026-09-16.md`)보다 먼저다.
     # 2026-09-16 실측: 파일명 역순이라 5건짜리 x- 가 36건짜리 본 다이제스트를 항상 이겼고,
@@ -319,7 +338,8 @@ def pr_body(topic: str, meta: dict, ok: bool, why: list[str], cands: list[tuple[
     out += ["", "## 원고", "",
             f"- 제목: {meta.get('title', '')}",
             f"- 요약: {meta.get('description', '')}",
-            f"- 채점: {'PASS' if ok else 'FAIL'} — " + " · ".join(w[:160] for w in why[:3]),
+            # 사유엔 판정 모델의 비평이 그대로 들어와 줄바꿈·VIOLATIONS 줄이 섞인다 — 한 줄로 펴서 자른다
+            f"- 채점: {'PASS' if ok else 'FAIL'} — " + " · ".join(" ".join(w.split())[:200] for w in why[:3]),
             "", "## 검수 — 이 PR 위에서만", "",
             "- **승인** = merge. 블로그는 merge 즉시 게시되고, Threads 원고 PR 이 따라온다",
             "- **반려** = close + 사유 한 줄",
@@ -463,9 +483,10 @@ def selftest() -> int:
     import tempfile
     global DIGEST_DIR, CONTENT
     DIGEST_DIR, CONTENT = Path(tempfile.mkdtemp()), Path(tempfile.mkdtemp())
-    global on_topic, readable
-    on_topic = lambda titles: [t in ("첫 항목", "둘째 항목") for t in titles]   # noqa: E731  LLM 없이 판정 흉내
+    global on_topic, readable, queued_urls
+    on_topic = lambda titles: [t in ("첫 항목", "둘째 항목", "큐에 있는 항목") for t in titles]   # noqa: E731  LLM 없이 판정 흉내
     readable = lambda url: "blocked" not in url   # noqa: E731  네트워크 없이 가독성 흉내
+    queued_urls = lambda: {"https://ex.com/q"}   # noqa: E731  열린 원고 PR 이 잡은 출처 흉내
     today = datetime.now(KST).date()
     (DIGEST_DIR / f"x-{today}.md").write_text(
         "- [ ] **정치 뉴스**\n      `Techmeme` · https://ex.com/0\n\n"
@@ -504,12 +525,14 @@ def selftest() -> int:
         + "\n- [ ] **(불완전 텍스트)**\n      `bsky` · https://ex.com/d\n", encoding="utf-8")
     on_topic = lambda titles: [t != "정치 뉴스" for t in titles]   # noqa: E731  자리표시는 LLM 까지 안 간다
     (DIGEST_DIR / f"{today}.md").write_text(
-        "- [ ] **막힌 항목**\n      `r/x` · https://ex.com/blocked\n\n" + (DIGEST_DIR / f"{today}.md").read_text(encoding="utf-8"),
-        encoding="utf-8")
+        "- [ ] **큐에 있는 항목**\n      `HN` · https://ex.com/q\n\n- [ ] **막힌 항목**\n      `r/x` · https://ex.com/blocked\n\n"
+        + (DIGEST_DIR / f"{today}.md").read_text(encoding="utf-8"), encoding="utf-8")
     c = candidates(5)
-    assert c == [("첫 항목", "https://ex.com/a"), ("둘째 항목", "https://ex.com/c")], c   # 본 다이제스트 먼저 · 중복 제거 · 자리표시·못 읽는 출처 제외
+    assert c == [("첫 항목", "https://ex.com/a"), ("둘째 항목", "https://ex.com/c")], c   # 본 다이제스트 먼저 · 중복 제거 · 자리표시·못 읽는 출처·열린 PR 출처 제외
     body = pr_body("첫 항목", {"title": "T", "description": "D"}, False, ["규칙 1 위반"], c, "https://ex.com/a")
     assert body.startswith("## 주제 후보") and "1. **첫 항목**  ← 이번 원고" in body and "FAIL — 규칙 1 위반" in body
+    multi = pr_body("t", {}, False, ["규칙 3 약함.\n\nVIOLATIONS: R3"], [], "")
+    assert "규칙 3 약함. VIOLATIONS: R3" in multi and "\nVIOLATIONS" not in multi   # 비평의 줄바꿈이 본문을 깨지 않는다
     assert "/주제 N" in body and "2. **둘째 항목**" in body
     # 1번 출처가 403 이면 2번으로 — PR 본문의 "← 이번 원고" 는 URL 로 따라간다 (run 35322414732)
     global load_source
