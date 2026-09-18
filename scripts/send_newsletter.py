@@ -98,7 +98,10 @@ def load_ledger() -> dict:
     if not LEDGER.exists():
         return {}
     # 깨진 장부를 {} 로 읽으면 이미 나간 주차가 한 번 더 나간다 — 죽는다 (publish_queue.py 와 같은 규칙)
-    return json.loads(LEDGER.read_text(encoding="utf-8"))
+    led = json.loads(LEDGER.read_text(encoding="utf-8"))
+    if not isinstance(led, dict):   # `[]` 은 파싱되지만 "안 보낸 주차" 로 읽혀 한 번 더 나간다 (리뷰 2026-09-18)
+        raise ValueError(f"{LEDGER}: 장부가 객체가 아니다 ({type(led).__name__})")
+    return led
 
 
 def record(week: str, entry: dict) -> None:
@@ -159,9 +162,15 @@ def main(argv: list[str]) -> int:
 
     at = datetime.now(timezone.utc).isoformat(timespec="seconds")
     ids: dict = {}
+    # 구독자 세기는 아무것도 만들지 않는다 — 여기서 난 일시 오류(429·타임아웃)를 failed 로 적으면 그 주가 손으로 풀 때까지
+    # 막힌다(리뷰 2026-09-18). 장부에 적는 건 브로드캐스트·메일 생성부터다.
     try:
         n = count_subscribers(key, segment)
-        print(f"구독자 {n}명")
+    except Exception as e:  # noqa: BLE001
+        print(f"구독자 조회 실패 — 아무것도 안 보냈다, 다시 돌리면 된다: {e}", file=sys.stderr)
+        return 1
+    print(f"구독자 {n}명")
+    try:
         if n > 0:
             broadcast(key, segment, frm, a.subject, html, text, reply_to, ids)
             status = "sent"
@@ -196,6 +205,8 @@ def selftest() -> int:
         body = json.loads(req.data) if req.data else None
         calls.append((req.get_method(), u.path, dict(urllib.parse.parse_qsl(u.query)), body))
         if u.path == "/contacts":
+            if state.get("fail_contacts"):
+                raise TimeoutError("read timed out")
             q = dict(urllib.parse.parse_qsl(u.query))
             assert q["segment_id"] == "seg1", q
             cs = state["contacts"]
@@ -281,13 +292,20 @@ def selftest() -> int:
             assert e["status"] == "failed" and e["broadcast_id"] == "b1", e
             assert main(args) == 1
 
-            # 깨진 장부는 빈 장부가 아니다 — 죽는다
-            LEDGER.write_text("{깨짐")
-            try:
-                main(args)
-                raise AssertionError("깨진 장부를 통과함")
-            except json.JSONDecodeError:
-                pass
+            # 깨진 장부·객체 아닌 장부는 빈 장부가 아니다 — 죽는다
+            for bad_json in ("{깨짐", "[]"):
+                LEDGER.write_text(bad_json)
+                try:
+                    main(args)
+                    raise AssertionError(f"깨진 장부를 통과함: {bad_json}")
+                except ValueError:   # JSONDecodeError 도 ValueError 다
+                    pass
+
+            # 구독자 조회 실패는 장부에 안 남는다 — 아무것도 안 만들었으니 다시 돌리면 된다
+            LEDGER.unlink()
+            state["fail_contacts"] = True
+            assert main(args) == 1 and not LEDGER.exists()
+            state["fail_contacts"] = False
 
             # 파일명이 주차 형식이 아니면 거부
             bad = ROOT / "draft.md"
