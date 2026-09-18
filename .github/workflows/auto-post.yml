@@ -111,3 +111,14 @@ jobs:
             📝 블로그 원고 PR — 채점 ${{ steps.post.outputs.verdict }}
             merge=승인 · close=반려 · /변경 <지시> · /주제 N
             ${{ steps.post.outputs.pr }}
+
+      # PR 이 안 열렸으면 그 주 블로그가 없다 — 침묵이 아니라 폰에 한 줄이 와야 한다 (한도·토큰·다이제스트 없음)
+      - name: Telegram (실패)
+        if: failure() && steps.post.outputs.pr == ''
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ❌ auto-post 실패 — 원고 PR 이 열리지 않았다 (한도·토큰·다이제스트 확인)
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
