@@ -18,16 +18,7 @@ print(o, "월화수목금토일"[d.date.fromisoformat(o).weekday()], j.get("sour
 [ "$SRC" = "-" ] && SRC=""
 FAIL=false; [[ "$D" == *.FAIL.md ]] && FAIL=true
 
-gh label create "원고:thread" --force --color c98a00 --description "Threads 원고 PR — merge 하면 발행 대기, 채널 시각에 나간다" >/dev/null
-BASE=$(git rev-parse --abbrev-ref HEAD)
-git checkout -q -b "thread/$SLUG"
-git add "$D" "$SIDE"
-git commit -q -m "thread: $SLUG (채점 $($FAIL && echo 탈락 || echo 통과) · $ON 발행 예정)
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
-git push -q -u origin "thread/$SLUG"
-git checkout -q "$BASE"
-
+# 본문을 먼저 만든다 — thread 브랜치에 커밋하고 원래 브랜치로 돌아오면 원고 파일이 작업 트리에서 사라진다(2026-09-18 실측)
 BODY=$(mktemp)
 {
   echo "## Threads 원고 — $HEAD_LINE"; echo
@@ -41,5 +32,15 @@ BODY=$(mktemp)
   echo "- 채점 탈락(라벨 탈락)은 merge 해도 나가지 않는다(\`.FAIL\` 원고는 큐가 안 본다) — close 로 반려"; echo
   echo "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
 } > "$BODY"
+gh label create "원고:thread" --force --color c98a00 --description "Threads 원고 PR — merge 하면 발행 대기, 채널 시각에 나간다" >/dev/null
+BASE=$(git rev-parse --abbrev-ref HEAD)
+git checkout -q -b "thread/$SLUG"
+git add "$D" "$SIDE"
+git commit -q -m "thread: $SLUG (채점 $($FAIL && echo 탈락 || echo 통과) · $ON 발행 예정)
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+git push -q -u origin "thread/$SLUG"
+git checkout -q "$BASE"
+
 LABELS=(--label "원고:thread"); $FAIL && LABELS+=(--label "탈락")
 gh pr create --title "thread: $SLUG" --body-file "$BODY" --head "thread/$SLUG" "${LABELS[@]}"

@@ -66,9 +66,10 @@ jobs:
           ON=$(TZ=Asia/Seoul date -d 'next wednesday' +%F)
           SLUG=$(basename "$POST" .mdx)
           python scripts/write_thread.py --post "$POST" --publish-on "$ON" || echo "::warning title=스레드 채점 탈락::탈락 원고로 PR 을 연다"
+          # 판정은 PR 을 열기 전에 — 스크립트가 원고를 thread 브랜치에 커밋하고 돌아오면 파일이 작업 트리에서 사라진다
+          V=$( [ -f "drafts/threads/$SLUG.FAIL.md" ] && echo FAIL || echo PASS )
           URL=$(scripts/open_thread_pr.sh "$SLUG" "블로그 $BLOG_PR 의 파생 ($ON 발행)")
-          { echo "url=$URL"; echo "on=$ON"
-            echo "verdict=$( [ -f "drafts/threads/$SLUG.FAIL.md" ] && echo FAIL || echo PASS )"; } >> "$GITHUB_OUTPUT"
+          { echo "url=$URL"; echo "on=$ON"; echo "verdict=$V"; } >> "$GITHUB_OUTPUT"
 
       - name: Telegram
         if: steps.pr.outputs.url != ''
