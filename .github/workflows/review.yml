@@ -163,6 +163,9 @@ jobs:
             echo; echo '<details><summary>로그</summary>'; echo; echo '```'; tail -40 out.txt; echo '```'; echo '</details>'
           } > comment.md
           gh pr comment "$PR" --body-file comment.md
+          # /주제 로 출처가 바뀌었으면 review_cmd 가 pr_body.md 의 `← 이번 원고` 를 옮겨 뒀다 — 본문에 반영해야
+          # 다음 실행의 중복 제외(write_post.queued_urls)가 새 출처를 안다 (2026-09-18 #42·#59)
+          if [ "$RC" = 0 ] || [ "$RC" = 1 ]; then gh pr edit "$PR" --body-file pr_body.md >/dev/null; fi
           # 라벨 정리: 통과면 탈락 라벨을 떼고, 탈락이면 붙인다
           if [ "$RC" = 0 ]; then gh pr edit "$PR" --remove-label "탈락" 2>/dev/null || true; fi
           if [ "$RC" = 1 ]; then gh pr edit "$PR" --add-label "탈락" 2>/dev/null || true; fi
