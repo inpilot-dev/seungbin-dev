@@ -8,7 +8,8 @@ https://inpilot.dev/cards/<slug>/NN.jpg 가 공개 URL이 된다. Meta는 그 UR
 덱 형태:
   public/cards/<slug>/01.jpg … NN.jpg   (2~10장, 파일명 순서 = 카드 순서)
   public/cards/<slug>/caption.txt       (≤2,200자, 해시태그 ≤30개 — 넘으면 자르지 않고 거부)
-  public/cards/.published.json          ({slug: {status, at, media_id, permalink}}) 원장
+  drafts/cards/.published.json          ({slug: {status, at, media_id, permalink}}) 장부
+                                        — public/ 밑에 두면 inpilot.dev 로 공개돼 실패 사유까지 보인다(리뷰 2026-09-18)
 
 흐름: HEAD로 모든 이미지 URL 200 + image/jpeg 확인 → 게시 한도 확인 → 장마다 자식 컨테이너
 → 캐러셀 컨테이너 → status_code 폴링(1분 간격, 최대 5분) → media_publish → 원장 기록.
@@ -39,7 +40,7 @@ API = "https://graph.instagram.com/v1.0"
 # apex만. www.inpilot.dev 는 308 리다이렉트라 Meta가 9004로 실패한다.
 BASE = "https://inpilot.dev/cards"
 CARDS = Path(__file__).resolve().parent.parent / "public" / "cards"
-LEDGER = CARDS / ".published.json"
+LEDGER = CARDS.parent.parent / "drafts" / "cards" / ".published.json"
 MAX_CAPTION, MAX_TAGS = 2200, 30
 MIN_CARDS, MAX_CARDS = 2, 10          # API 캐러셀 범위
 POLL_SEC, POLL_TRIES = 60, 5          # 공식 권장: 1분에 한 번, 5분 이하
@@ -73,22 +74,26 @@ def _graph(path: str, token: str, method: str = "GET", **params) -> dict:
 def load_ledger() -> dict:
     """없으면 빈 원장. 깨진 파일은 죽는다 — 빈 원장으로 넘어가면 이미 나간 덱이 다시 나간다."""
     try:
-        return json.loads(LEDGER.read_text(encoding="utf-8"))
+        led = json.loads(LEDGER.read_text(encoding="utf-8"))
     except FileNotFoundError:
         return {}
+    if not isinstance(led, dict):   # `[]` 은 파싱은 되지만 "전부 미발행" 으로 읽힌다 — 같은 위험이다
+        raise ValueError(f"{LEDGER}: 장부가 객체가 아니다 ({type(led).__name__})")
+    return led
 
 
 def save_ledger(ledger: dict) -> None:
+    LEDGER.parent.mkdir(parents=True, exist_ok=True)
     LEDGER.write_text(json.dumps(ledger, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
 
 
-def next_deck(ledger: dict) -> str | None:
+def next_deck(ledger: dict, skip: set[str] = frozenset()) -> str | None:
     # ponytail: 실행당 1덱, 슬러그 이름순을 "오래된 순"으로 본다 (슬러그가 날짜로 시작한다는 가정).
     # 하루 여러 덱이 필요해지면 루프를 돌리고, 슬러그 규칙이 바뀌면 커밋 시각으로 정렬할 것.
     if not CARDS.is_dir():
         return None
     for d in sorted(p for p in CARDS.iterdir() if p.is_dir()):
-        if d.name not in ledger and (d / "caption.txt").is_file() and any(
+        if d.name not in ledger and d.name not in skip and (d / "caption.txt").is_file() and any(
                 IMG_RE.match(f.name) for f in d.iterdir()):
             return d.name
     return None
@@ -151,12 +156,21 @@ def main(argv: list[str]) -> int:
     dry = os.environ.get("DRY_RUN") == "1" or not token or not user
 
     ledger = load_ledger()
-    slug = next_deck(ledger)
-    if not slug:
-        print("발행할 덱 없음")
-        return 0
+    # 한도를 넘는 덱(장수·캡션)은 건너뛰고 다음 덱으로 — 하나가 큐 전체를 막지 않게(리뷰 2026-09-18).
+    # 원장엔 안 남긴다: 사람이 덱을 고치면 다음 실행이 그대로 집는다.
+    bad: set[str] = set()
+    while True:
+        slug = next_deck(ledger, bad)
+        if not slug:
+            print("발행할 덱 없음" + (f" (한도 초과로 건너뜀: {', '.join(sorted(bad))})" if bad else ""))
+            return 1 if bad else 0
+        try:
+            urls, caption = load_deck(slug)
+            break
+        except ValueError as e:
+            print(f"건너뜀: {e}", file=sys.stderr)
+            bad.add(slug)
     try:
-        urls, caption = load_deck(slug)
         print(f"덱 {slug}: {len(urls)}장 · 캡션 {len(caption)}자 · 해시태그 "
               f"{len(TAG_RE.findall(caption))}개")
         for u in urls:
@@ -179,10 +193,12 @@ def main(argv: list[str]) -> int:
         entry.update(status="published", media_id=mid)
         try:
             entry["permalink"] = _graph(mid, token, fields="permalink").get("permalink", "")
-        except RuntimeError:
+        except Exception:  # noqa: BLE001  링크는 부가 정보 — 없어도 게시는 끝났다
             pass
         print(f"게시됨: {mid} {entry.get('permalink', '')}")
-    except RuntimeError as e:
+    except Exception as e:  # noqa: BLE001
+        # urllib 은 응답 단계 오류(타임아웃·연결 끊김)를 URLError 로 감싸지 않고, 본문이 JSON 이 아닐 수도 있다.
+        # 무엇이 터지든 원장에 남겨야 한다 — Meta 쪽은 게시됐는데 원장이 비면 다음 실행이 또 올린다(리뷰 2026-09-18).
         # 실패도 원장에 남긴다 → 다음 실행이 자동 재시도하지 않는다(중복 게시 방지).
         # 재시도하려면 원장에서 그 슬러그 항목을 지운다.
         entry.update(status="failed", media_id=None, error=str(e)[:300])
@@ -236,8 +252,9 @@ def selftest() -> int:
     urllib.request.urlopen, POLL_SEC = fake_urlopen, 0
     try:
         with tempfile.TemporaryDirectory() as tmp:
-            CARDS = Path(tmp)
-            LEDGER = CARDS / ".published.json"
+            CARDS = Path(tmp) / "public" / "cards"
+            CARDS.mkdir(parents=True)
+            LEDGER = Path(tmp) / "drafts" / "cards" / ".published.json"
 
             def deck(slug, n, caption="본문 #a #b"):
                 (CARDS / slug).mkdir()
@@ -303,10 +320,22 @@ def selftest() -> int:
             assert "2026-10-03-c" not in json.loads(LEDGER.read_text())   # 아무것도 안 보냈으니 원장에 안 남긴다
             state["quota"] = 0
 
-            # 캡션·장수 한도: 자르지 않고 거부
+            # 응답 단계 예외(타임아웃 등 RuntimeError 가 아닌 것)도 failed 로 원장에 남는다
+            real_publish = globals()["publish"]
+            globals()["publish"] = lambda *a: (_ for _ in ()).throw(TimeoutError("read timed out"))
+            code, _ = run()
+            assert code == 1 and json.loads(LEDGER.read_text())["2026-10-03-c"]["status"] == "failed"
+            globals()["publish"] = real_publish
+            led = json.loads(LEDGER.read_text()); del led["2026-10-03-c"]; LEDGER.write_text(json.dumps(led))
+
+            # 캡션·장수 한도: 자르지 않고 거부. 나쁜 덱은 건너뛰고 다음 덱은 나간다
             (CARDS / "2026-10-03-c" / "caption.txt").write_text("가" * 2201, encoding="utf-8")
             os.environ["DRY_RUN"] = "1"
             assert run()[0] == 1
+            deck("2026-10-04-d", 2)
+            code, out = run()
+            assert code == 0 and "건너뜀" in out and "2026-10-04-d/01.jpg" in out, out
+            import shutil; shutil.rmtree(CARDS / "2026-10-04-d")
             (CARDS / "2026-10-03-c" / "caption.txt").write_text(
                 " ".join(f"#t{i}" for i in range(31)), encoding="utf-8")
             assert run()[0] == 1
@@ -315,12 +344,13 @@ def selftest() -> int:
             except ValueError:
                 pass
 
-            # 깨진 원장은 죽는다
-            LEDGER.write_text("{broken")
-            try:
-                load_ledger(); raise AssertionError("깨진 원장 통과")
-            except json.JSONDecodeError:
-                pass
+            # 깨진 원장·객체 아닌 원장은 죽는다
+            for bad_json in ("{broken", "[]"):
+                LEDGER.write_text(bad_json)
+                try:
+                    load_ledger(); raise AssertionError(f"깨진 원장 통과: {bad_json}")
+                except ValueError:   # JSONDecodeError 도 ValueError 다
+                    pass
     finally:
         urllib.request.urlopen = real_urlopen
         os.environ.clear(); os.environ.update(real_env)
