@@ -48,6 +48,22 @@ def candidates_from_body(body: str) -> list[tuple[str, str]]:
     return [(t, u) for _, t, u in CAND_RE.findall(body or "")]
 
 
+MARK = "  ← 이번 원고"
+
+
+def remark(body: str, url: str, title: str) -> str:
+    """`/주제` 재생성 뒤 PR 본문의 `← 이번 원고` 를 새 출처로 옮긴다. 후보 밖 출처(/주제 URL)면 목록 끝에 한 줄 붙인다.
+    2026-09-18 실측: 표시가 옛 후보에 남아 write_post.queued_urls() 가 새 출처를 몰랐고, 같은 날 논평(#59)이
+    블로그 #42 가 /주제 3 으로 바꾼 출처를 또 골랐다."""
+    body = body.replace(MARK, "")
+    for t, u in candidates_from_body(body):
+        if u == url:
+            return body.replace(f"**{t}**", f"**{t}**{MARK}", 1)
+    head = "## 원고"
+    line = f"- **{title or url}**{MARK}  \n   {url}\n\n"
+    return body.replace(head, line + head, 1) if head in body else body + "\n" + line
+
+
 def topic_sources(mdx: str) -> tuple[str, list[str]]:
     """frontmatter 의 topic·sources. topic 이 없는 옛 원고는 title 로 대신한다."""
     head = mdx.split("\n---", 2)[0] if mdx.startswith("---") else ""
@@ -105,7 +121,11 @@ def main(argv: list[str]) -> int:
     if a.mode == "plan":
         return 0
     import write_post  # noqa: E402  LLM 호출은 여기서만
-    return write_post.main(plan)
+    rc = write_post.main(plan)
+    if cmd["cmd"] == "주제" and rc in (0, 1):   # 브랜치가 새 원고로 바뀌었다 — 본문 표시도 따라간다(워크플로가 gh pr edit)
+        src, topic = plan[plan.index("--source") + 1], plan[plan.index("--topic") + 1]
+        Path(a.pr_body).write_text(remark(Path(a.pr_body).read_text(encoding="utf-8"), src, topic), encoding="utf-8")
+    return rc
 
 
 def selftest() -> int:
@@ -129,6 +149,14 @@ def selftest() -> int:
     assert "1~2번" in build_argv(parse("/주제 7"), body, mdx, "s", "b")
     assert build_argv(parse("/주제 https://ex.com/n 새 주제"), body, mdx, "s", "b")[1:3] == ["--topic", "새 주제"]
     assert "출처" in build_argv(parse("/변경 x"), body, "", "s", "b")   # 원고에서 주제·출처를 못 읽으면 거부
+    # /주제 뒤 표시 이동 — write_post.queued_urls() 가 읽는 모양(`← 이번 원고` 다음 줄 URL)이어야 한다
+    import re as _re
+    moved = remark(body, "https://ex.com/c", "둘째 항목")
+    assert moved.count(MARK) == 1 and "2. **둘째 항목**  ← 이번 원고" in moved, moved
+    assert _re.findall(r"← 이번 원고\s*\n\s*(https?://\S+)", moved) == ["https://ex.com/c"]
+    free = remark(body, "https://ex.com/n", "새 주제")
+    assert _re.findall(r"← 이번 원고\s*\n\s*(https?://\S+)", free) == ["https://ex.com/n"], free
+    assert candidates_from_body(free) == candidates_from_body(body)   # 후보 번호는 안 바뀐다
     print("selftest ok")
     return 0
 

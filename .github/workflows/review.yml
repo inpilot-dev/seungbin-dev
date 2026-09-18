@@ -2,7 +2,7 @@ name: review
 
 # 검수 표면 = GitHub PR (docs/adr/0001). 사람의 행동 셋에 반응한다.
 #   ① 블로그 원고 PR merge   → Threads 원고를 만들어 채점하고 **또 PR 로** 올린다 (파생, 수시 검수)
-#   ② Threads 원고 PR merge  → Threads 에 발행한다 (v0: merge 즉시. 채널 시각 발행은 증분 2)
+#   ② Threads 원고 PR merge  → 라벨 `발행 대기` + 예정 시각 댓글. 발행은 publish-queue.yml 이 그 날 09:00 에 (증분 2)
 #   ③ 원고 PR 댓글 /변경·/주제 → 재생성해 같은 PR 브랜치에 밀어 넣고 결과를 댓글로 남긴다
 # 저장소는 공개다 — 댓글 명령은 OWNER 만 받는다. 아니면 누구든 sonnet 생성을 돌릴 수 있다.
 on:
@@ -50,47 +50,26 @@ jobs:
         if: steps.pick.outputs.post != ''
         run: npm install -g @anthropic-ai/claude-code
 
-      - name: Threads 원고 생성 · 채점
-        if: steps.pick.outputs.post != ''
-        env:
-          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          POST: ${{ steps.pick.outputs.post }}
-        run: python scripts/write_thread.py --post "$POST" || echo "::warning title=스레드 채점 탈락::탈락 원고로 PR 을 연다"
-
-      - name: Threads 원고 PR
+      # 블로그 기반 논평은 다음 수요일 09:00 에 나간다 (월 ① · 수 블로그 · 금 ②)
+      - name: Threads 원고 생성 · 채점 · PR
         id: pr
         if: steps.pick.outputs.post != ''
         env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           POST: ${{ steps.pick.outputs.post }}
           BLOG_PR: ${{ github.event.pull_request.html_url }}
         run: |
           set -euo pipefail
-          SLUG=$(basename "$POST" .mdx)
-          D=""; for f in "drafts/threads/$SLUG.md" "drafts/threads/$SLUG.FAIL.md"; do [ -f "$f" ] && { D="$f"; break; }; done
-          [ -n "$D" ] || { echo "::error title=초안 없음::write_thread 가 파일을 안 남겼다"; exit 1; }
-          LABELS=(--label "원고:thread"); case "$D" in *.FAIL.md) LABELS+=(--label "탈락");; esac
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git checkout -b "thread/$SLUG"
-          git add drafts/threads
-          git commit -m "thread: $SLUG (블로그 승인 파생 · 채점 $( [[ "$D" == *.FAIL.md ]] && echo 탈락 || echo 통과 ))
-
-          Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
-          git push -u origin "thread/$SLUG"
-          {
-            echo "## Threads 원고 — 블로그 $BLOG_PR 의 파생"; echo
-            echo "발행 시각: 승인(merge) 즉시 (증분 2 에서 수 09:00 로 옮긴다). 체인은 \`---\` 로 나뉜다."; echo
-            echo '```'; cat "$D"; echo '```'; echo
-            echo "## 검수"; echo
-            echo "- **승인** = merge → Threads 발행"; echo "- **반려** = close + 사유 한 줄"
-            echo "- 채점 탈락(라벨 탈락)이면 merge 해도 나가지 않는다 — close 하거나, 블로그 글을 고쳐 publish-thread 로 다시 만든다"
-            echo "- 결정이 없으면 보류 — 두 슬롯을 지나면 자동 반려"; echo
-            echo "🤖 Generated with [Claude Code](https://claude.com/claude-code)"
-          } > body.md
-          URL=$(gh pr create --title "thread: $SLUG" --body-file body.md "${LABELS[@]}")
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "verdict=$( [[ "$D" == *.FAIL.md ]] && echo FAIL || echo PASS )" >> "$GITHUB_OUTPUT"
+          ON=$(TZ=Asia/Seoul date -d 'next wednesday' +%F)
+          SLUG=$(basename "$POST" .mdx)
+          python scripts/write_thread.py --post "$POST" --publish-on "$ON" || echo "::warning title=스레드 채점 탈락::탈락 원고로 PR 을 연다"
+          # 판정은 PR 을 열기 전에 — 스크립트가 원고를 thread 브랜치에 커밋하고 돌아오면 파일이 작업 트리에서 사라진다
+          V=$( [ -f "drafts/threads/$SLUG.FAIL.md" ] && echo FAIL || echo PASS )
+          URL=$(scripts/open_thread_pr.sh "$SLUG" "블로그 $BLOG_PR 의 파생 ($ON 발행)")
+          { echo "url=$URL"; echo "on=$ON"; echo "verdict=$V"; } >> "$GITHUB_OUTPUT"
 
       - name: Telegram
         if: steps.pr.outputs.url != ''
@@ -99,56 +78,40 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            🧵 Threads 원고 PR — 채점 ${{ steps.pr.outputs.verdict }} (블로그 승인 파생)
-            merge=발행 · close=반려
+            🧵 Threads 원고 PR — 채점 ${{ steps.pr.outputs.verdict }} (블로그 승인 파생 · ${{ steps.pr.outputs.on }} 09:00 발행 예정)
+            merge=발행 대기 · close=반려
             ${{ steps.pr.outputs.url }}
 
-  publish-thread:
-    name: Threads 승인 → 발행
+  queued:
+    name: Threads 승인 → 발행 대기
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, '원고:thread')
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 5
     steps:
-      - name: 재실행 거부 (중복 발행)
-        if: github.run_attempt != 1
-        run: |
-          echo "::error title=재실행 금지::재실행은 체인을 처음부터 다시 올린다. 끊긴 체인은 publish-thread 워크플로에 draft·reply_to·start 를 넣어 이어 붙여라"
-          exit 1
       - uses: actions/checkout@v7
         with:
           ref: main
-      - uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-      - name: 머지된 초안 찾기
-        id: pick
+      # 발행은 여기서 하지 않는다 — publish-queue.yml 이 사이드카 날짜 09:00 에 낸다. 여기선 사람에게 언제 나가는지만 알린다
+      - name: 라벨 · 예정 댓글
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           D=$(gh pr view "$PR" --json files --jq '.files[].path' | grep -E '^drafts/threads/.*\.md$' | head -1 || true)
-          [ -n "$D" ] || { echo "::error title=초안 없음::drafts/threads/ 파일이 없는 PR 이다"; exit 1; }
-          echo "draft=$D" >> "$GITHUB_OUTPUT"
-      # .FAIL 초안은 스크립트가 거부한다(exit 1) — merge 해도 안 나간다
-      - name: 발행
-        id: pub
-        env:
-          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
-          DRAFT: ${{ steps.pick.outputs.draft }}
-        run: |
-          set -euo pipefail
-          python scripts/write_thread.py --draft "$DRAFT" --publish | tee out.txt
-          echo "link=$(grep -o 'https://www.threads.com/[^ ]*' out.txt | head -1 || true)" >> "$GITHUB_OUTPUT"
-      - name: Telegram
-        if: always()
-        uses: ./.github/actions/telegram
-        with:
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
-          text: |
-            ${{ steps.pub.outcome == 'success' && '✅ Threads 발행됨' || '❌ Threads 발행 실패 — 실행 로그를 보라' }}
-            ${{ steps.pub.outputs.link || github.event.pull_request.html_url }}
+          if [ -z "$D" ] || [[ "$D" == *.FAIL.md ]]; then
+            gh pr comment "$PR" --body "⚠️ 발행 안 됨 — 통과한 원고가 없다(\`${D:-없음}\`). 탈락 원고는 큐가 내지 않는다."
+            exit 0
+          fi
+          ON=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["publish_on"])' "${D%.md}.json")
+          # 발행 시각을 지나 merge 됐으면 큐가 이 원고를 안 낸다(그 주는 보류) — 나간다고 알리면 거짓말이다
+          if [ "$(TZ=Asia/Seoul date +%s)" -ge "$(TZ=Asia/Seoul date -d "$ON 09:00" +%s)" ]; then
+            gh pr comment "$PR" --body "⏸ 보류 — 발행 시각($ON 09:00 KST)이 지나 merge 됐다. 이번 주는 안 나간다. 꼭 내야 하면 publish-thread 워크플로에 \`$D\` 를 넣어 손으로 돌려라."
+            exit 0
+          fi
+          gh label create "발행 대기" --force --color 00795f --description "승인됨 — 채널 시각에 publish-queue 가 낸다" >/dev/null
+          gh pr edit "$PR" --add-label "발행 대기" >/dev/null
+          gh pr comment "$PR" --body "🕘 발행 대기 — **$ON 09:00 KST** 에 publish-queue 가 낸다. 그 전에 빼려면 main 에서 \`$D\` 를 지워라."
 
   command:
     name: 댓글 /변경 · /주제
@@ -200,6 +163,9 @@ jobs:
             echo; echo '<details><summary>로그</summary>'; echo; echo '```'; tail -40 out.txt; echo '```'; echo '</details>'
           } > comment.md
           gh pr comment "$PR" --body-file comment.md
+          # /주제 로 출처가 바뀌었으면 review_cmd 가 pr_body.md 의 `← 이번 원고` 를 옮겨 뒀다 — 본문에 반영해야
+          # 다음 실행의 중복 제외(write_post.queued_urls)가 새 출처를 안다 (2026-09-18 #42·#59)
+          if [ "$RC" = 0 ] || [ "$RC" = 1 ]; then gh pr edit "$PR" --body-file pr_body.md >/dev/null; fi
           # 라벨 정리: 통과면 탈락 라벨을 떼고, 탈락이면 붙인다
           if [ "$RC" = 0 ]; then gh pr edit "$PR" --remove-label "탈락" 2>/dev/null || true; fi
           if [ "$RC" = 1 ]; then gh pr edit "$PR" --add-label "탈락" 2>/dev/null || true; fi
