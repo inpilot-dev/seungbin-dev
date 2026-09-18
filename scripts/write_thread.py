@@ -22,14 +22,21 @@
 사용:
   python3 scripts/write_thread.py --post content/foo.mdx
   python3 scripts/write_thread.py --digest digest/x-2026-09-10.md --pick 1 --publish
+  python3 scripts/write_thread.py --from-digest 1 --publish-on 2026-09-28   # 논평 ①②
+
+발행 시각 (증분 2, 2026-09-18): 원고는 사이드카 `drafts/threads/<slug>.json` `{"publish_on", "source"}` 를 남기고,
+merge 된 뒤 publish_queue.py 가 그 날짜 09:00 에 낸다. merge 즉시 발행(v0)은 없어졌다.
   python3 scripts/write_thread.py --selftest
 """
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
+import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -53,6 +60,45 @@ def load_digest_item(md: str, pick: int) -> tuple[str, str]:
         raise SystemExit(f"--pick {pick}: 항목 1~{len(items)} 중 골라라")
     title, url, orig = items[pick - 1]
     return title, f"{url}\n{orig or ''}"
+
+
+def digest_pick(n: int) -> tuple[str, str, str]:
+    """write_post.candidates() 에서 이전 논평이 쓴 URL 을 뺀 n번째 → (제목, URL, 원문).
+    블로그가 쓴 것(게시·열린 PR)은 candidates() 가 이미 뺀다. 여기선 논평 쪽 — main 의 사이드카와
+    **열린** `원고:thread` PR 본문의 `출처:` 줄(목요일 ② 가 아직 결정 안 된 ① 과 겹치지 않게).
+    `--digest --pick` 은 raw 인덱스라 주제 밖 뉴스·이미 쓴 출처·자리표시 제목을 못 거른다 — 이건 거른다.
+    출처를 못 읽는 후보(403)는 건너뛴다(write_post.first_readable, 2026-09-18 실측)."""
+    import write_post as wp
+    used = {wp.norm_url(u) for u in sidecar_sources() + queued_thread_urls()}
+    cands = [(t, u) for t, u in wp.candidates(wp.CANDIDATES * 2) if wp.norm_url(u) not in used]
+    got = wp.first_readable(cands[n - 1:])
+    if not got:
+        raise SystemExit("논평할 다이제스트 후보가 없다 — 블로그·이전 논평이 다 썼거나 출처를 못 읽는다")
+    title, url = got
+    return title, url, wp.load_source(url)[1]
+
+
+def queued_thread_urls() -> list[str]:
+    """열린 Threads 원고 PR 이 잡은 출처. 실패하면 빈 목록 — 겹침은 사람이 close 하면 되지만 여기서 죽으면 그 날 논평이 없다."""
+    try:
+        r = subprocess.run(["gh", "pr", "list", "--state", "open", "--label", "원고:thread", "--limit", "50", "--json", "body"],
+                           cwd=ROOT, capture_output=True, text=True, timeout=30)
+        bodies = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else []
+    except Exception as e:  # noqa: BLE001
+        print(f"열린 Threads 원고 PR 조회 실패 — 제외 없이 진행: {e}", file=sys.stderr)
+        return []
+    return [u for b in bodies for u in re.findall(r"^출처: (https?://\S+)", b.get("body") or "", re.M)]
+
+
+def sidecar_sources() -> list[str]:
+    """이미 논평 원고로 쓴 출처 — 같은 소재로 두 번 논평하지 않게."""
+    out = []
+    for f in OUT.glob("*.json"):
+        try:
+            out.append(json.loads(f.read_text(encoding="utf-8")).get("source", ""))
+        except ValueError:
+            pass
+    return [u for u in out if u]
 
 
 def build_prompt(title: str, source: str, url: str | None, feedback: str = "") -> str:
@@ -139,10 +185,12 @@ def main(argv: list[str]) -> int:
     g = ap.add_mutually_exclusive_group(required=True)
     g.add_argument("--post", help="content/*.mdx")
     g.add_argument("--digest", help="digest/*.md")
+    g.add_argument("--from-digest", type=int, metavar="N", help="주제 적합 후보 중 N번째(블로그·이전 논평이 쓴 것 제외)")
     g.add_argument("--draft", help="drafts/threads/*.md — 이미 통과한 초안을 재생성 없이 발행 (.FAIL 은 거부)")
     ap.add_argument("--pick", type=int, default=1)
     ap.add_argument("--reply-to", default=None, help="이 게시물 ID 의 답글로 시작 (끊긴 체인 이어붙이기)")
     ap.add_argument("--start", type=int, default=1, help="--draft 의 N번째 글부터 (1-based)")
+    ap.add_argument("--publish-on", default=None, metavar="YYYY-MM-DD", help="사이드카에 남길 발행일 — publish_queue.py 가 이 날 낸다")
     ap.add_argument("--publish", action="store_true")
     ap.add_argument("--no-llm-grade", action="store_true")
     a = ap.parse_args(argv[1:])
@@ -173,6 +221,10 @@ def main(argv: list[str]) -> int:
         md = p.read_text(encoding="utf-8")
         meta, _ = grade.split_front(md)
         title, source, url, slug = meta.get("title", p.stem), md, f"https://inpilot.dev/posts/{p.stem}", p.stem
+    elif a.from_digest:
+        import write_post as wp
+        title, url, text = digest_pick(a.from_digest)
+        source, slug = f"{url}\n{text}", f"c-{wp.slugify(title)[:50]}"
     else:
         title, source = load_digest_item(Path(a.digest).read_text(encoding="utf-8"), a.pick)
         url, slug = source.split("\n", 1)[0], f"{Path(a.digest).stem}-{a.pick}"
@@ -183,6 +235,8 @@ def main(argv: list[str]) -> int:
     OUT.mkdir(parents=True, exist_ok=True)
     dest = OUT / f"{slug}{'' if ok else '.FAIL'}.md"
     dest.write_text(SEP.join(parts) + "\n", encoding="utf-8")
+    if a.publish_on:
+        write_sidecar(slug, a.publish_on, url if a.from_digest or a.digest else "")
     print(("PASS → " if ok else "FAIL → ") + str(dest.relative_to(ROOT)))
     for w in why:
         print(f"  - {w[:300]}")
@@ -192,6 +246,14 @@ def main(argv: list[str]) -> int:
         ids = publish_chain(parts, dry=os.environ.get("DRY_RUN") == "1")
         print("발행:", ids)
     return 0
+
+
+def write_sidecar(slug: str, publish_on: str, source: str = "") -> Path:
+    """발행 예정일 사이드카. `.FAIL` 원고도 slug 가 같으니 하나로 충분하다."""
+    datetime.strptime(publish_on, "%Y-%m-%d")   # 날짜가 아니면 여기서 죽는다 — 큐가 조용히 못 읽는 것보다 낫다
+    f = OUT / f"{slug}.json"
+    f.write_text(json.dumps({"publish_on": publish_on, "source": source}, ensure_ascii=False) + "\n", encoding="utf-8")
+    return f
 
 
 def selftest() -> int:
@@ -214,6 +276,32 @@ def selftest() -> int:
     assert main(["", "--draft", str(good), "--start", "0"]) == 1     # 0 이면 마지막 글만 나갈 뻔했다
     assert main(["", "--draft", str(good), "--start", "4"]) == 1
     assert main(["", "--draft", str(good), "--start", "3"]) == 0
+    # 사이드카 · 이미 쓴 출처 제외
+    global OUT
+    real_out, OUT = OUT, d
+    write_sidecar("c-x", "2026-09-28", "https://ex.com/9")
+    assert json.loads((d / "c-x.json").read_text(encoding="utf-8"))["publish_on"] == "2026-09-28"
+    assert sidecar_sources() == ["https://ex.com/9"]
+    try:
+        write_sidecar("c-y", "9/28")
+        raise AssertionError("날짜 아닌 publish_on 을 받았다")
+    except ValueError:
+        pass
+    import write_post as wp
+    real = (wp.candidates, wp.load_source)
+    global queued_thread_urls
+    real_q, queued_thread_urls = queued_thread_urls, lambda: ["https://ex.com/1"]   # noqa: E731  열린 ① PR
+    wp.candidates = lambda n: [("열린 논평 것", "https://ex.com/1"), ("논평 했던 것", "https://ex.com/9/"), ("새 것", "https://ex.com/2")]  # noqa: E731
+    wp.load_source = lambda u: (u, "본문")   # noqa: E731
+    assert digest_pick(1) == ("새 것", "https://ex.com/2", "본문")
+    try:
+        digest_pick(2)
+        raise AssertionError("후보가 없는데 골랐다")
+    except SystemExit:
+        pass
+    wp.candidates, wp.load_source = real
+    queued_thread_urls = real_q
+    OUT = real_out
     print("selftest ok")
     return 0
 

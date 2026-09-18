@@ -1,0 +1,37 @@
+name: slot-notify
+
+# 일 20:00 KST 슬롯 알림 — 열린 원고 PR(라벨별 · 탈락/보류 표시)과 발행 예정 한 통 (증분 2, 2026-09-18).
+# 계기판·댓글 대상은 증분 3 에서 같은 메시지에 붙인다. 긴 메시지는 telegram 액션이 4,096자씩 나눈다.
+on:
+  schedule:
+    - cron: "0 11 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: 메시지
+        id: msg
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          python scripts/slot_notify.py --selftest
+          gh pr list --state open --limit 100 --json number,title,url,labels | python scripts/slot_notify.py | tee msg.txt
+          { echo "text<<EOF"; cat msg.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
+      - name: Telegram
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: ${{ steps.msg.outputs.text }}
