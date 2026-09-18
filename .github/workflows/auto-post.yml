@@ -1,6 +1,10 @@
 name: auto-post
 
-# 주제를 골라 글을 생성·채점하고 **검수 PR** 을 연다. 머지는 사람이 한다 (docs/adr/0001, 2026-09-18).
+# 주간 큐를 채운다 (증분 2, 2026-09-18). 머지는 사람이 한다 (docs/adr/0001).
+#   토 06:00 KST — 블로그 원고 PR(후보 5 + 1번 미리 렌더) + Threads 논평 ① PR(월 09:00 발행 예정)
+#   목 06:00 KST — Threads 논평 ② PR(금 09:00 발행 예정)
+#   → 일 20:00 슬롯에서 결정. 논평은 merge 해도 바로 안 나가고 publish-queue 가 그 날 09:00 에 낸다.
+# 블로그 원고 PR 은:
 #   PR 본문 맨 위 = 주제 후보 5개, 그 아래 = 1번으로 미리 렌더한 원고.
 #   merge = 승인(블로그 즉시 게시 → review.yml 이 Threads 원고 PR 을 연다)
 #   close = 반려 · 댓글 /변경 <지시> · /주제 N = 재생성 (review.yml)
@@ -12,11 +16,17 @@ name: auto-post
 #
 # ⚠️ Secret: CLAUDE_CODE_OAUTH_TOKEN(필수) · TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID(없으면 알림만 생략)
 on:
-  # 수요일 09:00 KST. 증분 2(토 06:00 큐 채움)가 오면 이 cron 은 그쪽으로 옮긴다
   schedule:
-    - cron: "0 0 * * 3"
+    - cron: "0 21 * * 5"   # 토 06:00 KST — 블로그 + 논평 ①
+    - cron: "0 21 * * 3"   # 목 06:00 KST — 논평 ②
   workflow_dispatch:
     inputs:
+      mode:
+        description: "auto = 목요일이면 논평만, 그 외엔 블로그 + 논평 ① · blog · thread"
+        required: false
+        default: auto
+        type: choice
+        options: [auto, blog, thread]
       topic:
         description: "글 주제 한 줄 (비우면 최신 다이제스트 후보 1번)"
         required: false
@@ -57,6 +67,26 @@ jobs:
           python scripts/grade.py --selftest
           python scripts/write_post.py --selftest
           python scripts/review_cmd.py --selftest
+          python scripts/write_thread.py --selftest
+
+      # 무엇을 만들지 + 논평 발행일. 목요일 실행은 금요일용 ②, 그 외(토 cron·수동)는 블로그 + 월요일용 ①
+      - name: 모드
+        id: mode
+        env:
+          MODE: ${{ inputs.mode || 'auto' }}
+        run: |
+          set -euo pipefail
+          if [ "$MODE" = auto ]; then
+            [ "$(TZ=Asia/Seoul date +%u)" = 4 ] && MODE=thread-fri || MODE=blog+thread
+          fi
+          case "$MODE" in
+            thread-fri) BLOG=false; THREAD=true; ON=$(TZ=Asia/Seoul date -d 'next friday' +%F) ;;
+            thread)     BLOG=false; THREAD=true; ON=$(TZ=Asia/Seoul date -d 'next monday' +%F) ;;
+            blog)       BLOG=true;  THREAD=false; ON="" ;;
+            *)          BLOG=true;  THREAD=true; ON=$(TZ=Asia/Seoul date -d 'next monday' +%F) ;;
+          esac
+          { echo "blog=$BLOG"; echo "thread=$THREAD"; echo "on=$ON"; } >> "$GITHUB_OUTPUT"
+          echo "모드 $MODE — 블로그 $BLOG · 논평 $THREAD ${ON:+($ON 09:00 발행 예정)}"
 
       - name: Install Claude Code CLI
         run: npm install -g @anthropic-ai/claude-code
@@ -78,6 +108,7 @@ jobs:
 
       - name: Write, grade, open review PR
         id: post
+        if: steps.mode.outputs.blog == 'true'
         env:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           GH_TOKEN: ${{ github.token }}
@@ -101,6 +132,37 @@ jobs:
           echo "verdict=${VERDICT:-?}" >> "$GITHUB_OUTPUT"
           [ -n "$PR" ] || { echo "::error title=PR 없음::원고 PR 이 열리지 않았다 — 위 로그를 보라"; exit 1; }
 
+      # 논평 ①②: 블로그가 고른 출처(열린 PR)와 이전 논평의 출처를 뺀 후보 1번. 탈락이어도 PR 로 올린다
+      - name: 논평 원고 PR
+        id: thread
+        if: ${{ !cancelled() && steps.mode.outputs.thread == 'true' }}
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          ON: ${{ steps.mode.outputs.on }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          python scripts/write_thread.py --from-digest 1 --publish-on "$ON" | tee t.txt || true
+          F=$(grep -oE '^(PASS|FAIL) → drafts/threads/[^ ]+\.md' t.txt | head -1 | sed 's/.* → //' || true)
+          [ -n "$F" ] || { echo "::error title=논평 없음::논평 원고가 안 만들어졌다 — 위 로그를 보라"; exit 1; }
+          SLUG=$(basename "$F" .md); SLUG=${SLUG%.FAIL}
+          URL=$(scripts/open_thread_pr.sh "$SLUG" "다이제스트 논평 ($ON 발행)")
+          echo "pr=$URL" >> "$GITHUB_OUTPUT"
+          echo "verdict=$( [[ "$F" == *.FAIL.md ]] && echo FAIL || echo PASS )" >> "$GITHUB_OUTPUT"
+
+      - name: Telegram (논평)
+        if: ${{ !cancelled() && steps.thread.outputs.pr != '' }}
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            🧵 논평 원고 PR — 채점 ${{ steps.thread.outputs.verdict }} · ${{ steps.mode.outputs.on }} 09:00 발행 예정
+            merge=발행 대기 · close=반려
+            ${{ steps.thread.outputs.pr }}
+
       - name: Telegram
         if: always() && steps.post.outputs.pr != ''
         uses: ./.github/actions/telegram
@@ -112,13 +174,13 @@ jobs:
             merge=승인 · close=반려 · /변경 <지시> · /주제 N
             ${{ steps.post.outputs.pr }}
 
-      # PR 이 안 열렸으면 그 주 블로그가 없다 — 침묵이 아니라 폰에 한 줄이 와야 한다 (한도·토큰·다이제스트 없음)
+      # 원고 PR 이 안 열렸으면 그 주 그 칸이 비다 — 침묵이 아니라 폰에 한 줄이 와야 한다 (한도·토큰·다이제스트 없음)
       - name: Telegram (실패)
-        if: failure() && steps.post.outputs.pr == ''
+        if: failure()
         uses: ./.github/actions/telegram
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            ❌ auto-post 실패 — 원고 PR 이 열리지 않았다 (한도·토큰·다이제스트 확인)
+            ❌ auto-post 실패 — 블로그 ${{ steps.post.outputs.pr != '' && '열림' || steps.mode.outputs.blog == 'true' && '안 열림' || '해당 없음' }} · 논평 ${{ steps.thread.outputs.pr != '' && '열림' || steps.mode.outputs.thread == 'true' && '안 열림' || '해당 없음' }} (한도·토큰·다이제스트 확인)
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
