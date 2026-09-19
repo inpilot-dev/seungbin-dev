@@ -1,15 +1,20 @@
 name: slot-notify
 
-# 일 20:00 KST 슬롯 알림 — 열린 원고 PR(라벨별 · 탈락/보류 표시)과 발행 예정 한 통 (증분 2, 2026-09-18).
-# 계기판·댓글 대상은 증분 3 에서 같은 메시지에 붙인다. 긴 메시지는 telegram 액션이 4,096자씩 나눈다.
+# 일 20:00 KST 슬롯 알림 (증분 2·3, 2026-09-18~19). 긴 메시지는 telegram 액션이 4,096자씩 나눈다.
+#   ① 열린 원고 PR(라벨별 · 탈락/보류) + 발행 예정 — slot_notify.py
+#   ② 계기판(직전 7일, #53) — dashboard.py --append → state/dashboard.jsonl 을 main 에 커밋(vercel 은 state/ 무시)
+#   ③ 댓글 대상 5건 + 초안(#54) — comment_assist.py --telegram 이 **직접** 보낸다. 남의 아이디·답글이라
+#      공개 로그·액션 입력에 싣지 않는다(레포가 공개다). 슬롯 메시지엔 건수 한 줄만.
+# ⚠️ Secret: TELEGRAM_* · RESEND_API_KEY·RESEND_AUDIENCE_ID · THREADS_TOKEN · CLAUDE_CODE_OAUTH_TOKEN(초안) — 없으면 "미연결"
 on:
   schedule:
     - cron: "0 11 * * 0"
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write        # state/dashboard.jsonl
   pull-requests: read
+  actions: read          # 계기판 '발행 실패' = publish-queue 빨간 실행 수
 
 jobs:
   notify:
@@ -20,15 +25,42 @@ jobs:
       - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
       - name: 메시지
         id: msg
         env:
           GH_TOKEN: ${{ github.token }}
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_AUDIENCE_ID: ${{ secrets.RESEND_AUDIENCE_ID }}
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           set -euo pipefail
-          python scripts/slot_notify.py --selftest
-          gh pr list --state open --limit 100 --json number,title,url,labels | python scripts/slot_notify.py | tee msg.txt
+          for f in slot_notify dashboard comment_assist; do python "scripts/$f.py" --selftest >/dev/null; done
+          gh pr list --state open --limit 100 --json number,title,url,labels | python scripts/slot_notify.py > msg.txt
+          # 계기판·댓글은 부가 정보 — 죽어도 원고 목록은 나간다
+          { echo; python scripts/dashboard.py --append || echo "📊 계기판 실패 — 실행 로그를 보라"; } >> msg.txt
+          # stdout 은 건수 한 줄뿐(본문은 스크립트가 Telegram 으로 직접)
+          { echo; python scripts/comment_assist.py --telegram || echo "💬 댓글 보조 실패"; } >> msg.txt
+          cat msg.txt
           { echo "text<<EOF"; cat msg.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
+      - name: 계기판 기록 커밋
+        run: |
+          set -euo pipefail
+          [ -f state/dashboard.jsonl ] || exit 0
+          # 최신 main 위에 이 파일만 얹는다 — HEAD 를 그대로 밀면 브랜치 dispatch 때 머지 안 된 커밋이 main 에 들어간다
+          cp state/dashboard.jsonl "$RUNNER_TEMP/dashboard.jsonl"
+          git fetch -q origin main && git checkout -q -B state-commit origin/main
+          mkdir -p state && cp "$RUNNER_TEMP/dashboard.jsonl" state/dashboard.jsonl
+          git add state/dashboard.jsonl
+          git diff --cached --quiet && exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "state: 계기판 $(TZ=Asia/Seoul date +%F)"
+          git push -q origin state-commit:main
       - name: Telegram
         uses: ./.github/actions/telegram
         with:
