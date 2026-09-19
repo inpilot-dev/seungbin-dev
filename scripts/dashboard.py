@@ -195,9 +195,15 @@ def row(d: dict) -> dict:
 
 def last_row() -> dict | None:
     try:
-        return json.loads(JSONL.read_text(encoding="utf-8").strip().splitlines()[-1])
+        r = json.loads(JSONL.read_text(encoding="utf-8").strip().splitlines()[-1])
     except Exception:  # noqa: BLE001 — 없음·빈 파일·깨진 줄이면 증감만 생략
         return None
+    # 파싱은 되지만 모양이 다른 줄(손 편집·스키마 변경)도 증감만 생략 — render() 가 죽으면 슬롯 메시지에서 계기판이 빠진다
+    if not isinstance(r, dict):
+        return None
+    if not isinstance(r.get("threads"), (dict, type(None))):
+        r["threads"] = None
+    return r
 
 
 def main(argv: list[str]) -> int:
@@ -354,6 +360,13 @@ def selftest() -> int:
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = v
+    # 모양이 다른 이전 줄은 증감만 생략하고 죽지 않는다 (리뷰 2026-09-19)
+    real_jsonl, JSONL = JSONL, Path(tempfile.mkdtemp()) / "d.jsonl"
+    for bad in ("[1]", '{"threads": "조회 실패"}', "5"):
+        JSONL.write_text(bad + "\n", encoding="utf-8")
+        r = last_row()
+        assert r is None or r.get("threads") is None, (bad, r)
+    JSONL = real_jsonl
     print("selftest ok")
     return 0
 
