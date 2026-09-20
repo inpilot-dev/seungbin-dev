@@ -7,7 +7,17 @@ export const SITE = {
   url: process.env.NEXT_PUBLIC_SITE_URL ?? "https://inpilot.dev",
   author: "Seungbin",
   locale: "ko_KR",
+  // 문의 수신 주소. **값을 소스에 두지 않는다** — 이 저장소는 공개고, 커밋은 지워도 남는다.
+  // 서버 컴포넌트가 빌드 때 읽으므로 NEXT_PUBLIC_ 접두사가 필요 없다(클라이언트 번들에 안 실린다).
+  // 받을 편지함이 있는 주소여야 한다: inpilot.dev 에는 MX 레코드가 없어 hello@inpilot.dev 로는
+  // 답장을 못 받는다(2026-09-21 dig. api/subscribe 의 RESEND_REPLY_TO 주석과 같은 사정).
+  contact: process.env.CONTACT_EMAIL ?? "",
 } as const;
+
+// 안 넣으면 CTA 가 통째로 사라지고 12/06 판정의 인바운드가 0 에 고정된다. 조용히 넘어가지 않는다.
+if (!SITE.contact) {
+  console.warn("[inpilot] CONTACT_EMAIL 미설정 — 게시물 하단 진단 콜 CTA 를 숨긴다 (인바운드 지표가 0 으로 고정)");
+}
 
 export function ogImageUrl(params: { title: string; tags?: string[] }): string {
   const sp = new URLSearchParams({ title: params.title });
