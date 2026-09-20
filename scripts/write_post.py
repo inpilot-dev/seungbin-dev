@@ -491,7 +491,8 @@ def selftest() -> int:
     (DIGEST_DIR / f"x-{today}.md").write_text(
         "- [ ] **정치 뉴스**\n      `Techmeme` · https://ex.com/0\n\n"
         "- [ ] **첫 항목**\n      `bsky @a` · https://ex.com/1\n\n"
-        "- [ ] **둘째 항목**\n      `HN` · https://ex.com/2\n", encoding="utf-8")
+        # 출처와 URL 사이의 배수 칸(collect_digest.render, 2026-09-21)이 있어도 후보를 집어내야 한다
+        "- [ ] **둘째 항목**\n      `HN (240pts)` · 2.0× · https://ex.com/2\n", encoding="utf-8")
     assert pick_from_digest(1) == ("첫 항목", ["https://ex.com/1"])   # 주제 밖 1번은 건너뛴다
     (CONTENT / "old.mdx").write_text('---\nsources: ["https://ex.com/1/"]\n---\n본문\n', encoding="utf-8")
     assert pick_from_digest(1) == ("둘째 항목", ["https://ex.com/2"])  # 이미 쓴 출처(끝 슬래시 달라도)는 건너뛴다
