@@ -209,6 +209,8 @@ def parse_hn(raw: bytes) -> list[dict]:
                 "source": f"HN ({h.get('points', 0)}pts)",
                 "title": clean(h["title"]),
                 "url": url,
+                # X·bsky 와 같은 칸에 넣는다 — source_means() 가 소스를 안 가리고 평균을 낸다
+                "favs": h.get("points", 0),
             })
     return out
 
@@ -410,14 +412,37 @@ def headline(summary: str | None, title: str, url: str) -> str | None:
     return clean(slug) if re.search(r"[^\W\d_]{3}", slug) else None
 
 
-def render(items: list[dict], summaries: list[str] | None) -> str:
+def source_means(items: list[dict]) -> dict[str, float]:
+    """소스별 반응 수(`favs` = HN points · X 좋아요 · bsky 좋아요) 평균 — 후보 줄 배수의 분모다.
+
+    분모는 그 소스가 **이번 실행에서 받아온 전건**이다(상한·중복 제거 전). 다이제스트에 실제로
+    실린 몇 건으로 평균을 내면 interleave 가 소스당 1~2건만 남겨서 배수가 늘 1.0× 이 된다.
+
+    표본 1건인 소스는 제 자신과 비교해 무조건 1.0× 라 정보가 없다 — 분모에서 뺀다(= 공란).
+    ponytail: 실행 1회 평균이라 그날 그 소스가 통째로 조용하면 평범한 항목도 배수가 커진다.
+    며칠치 기준선이 필요해지면 `.seen.json` 옆에 소스별 중앙값을 쌓는다 — 지금은 상태를 안 늘린다.
+    """
+    by_source: dict[str, list[int]] = {}
+    for it in items:
+        # points 가 null 로 오는 항목이 있다 — 숫자가 아니면 그 소스의 평균에 넣지 않는다
+        if isinstance(it.get("favs"), int):
+            by_source.setdefault(it["source"].split(" (")[0], []).append(it["favs"])
+    return {k: sum(v) / len(v) for k, v in by_source.items() if len(v) >= 2 and sum(v) > 0}
+
+
+def render(items: list[dict], summaries: list[str] | None,
+           means: dict[str, float] | None = None) -> str:
+    means = means or {}
     out, dropped = [], 0
     for i, it in enumerate(items):
         head = headline(summaries[i] if summaries else None, it["title"], it["url"])
         if head is None:
             dropped += 1
             continue
-        out += [f"- [ ] **{head}**", f"      `{it['source']}` · {it['url']}", ""]
+        # 소스 평균 대비 배수. 숫자가 없는 소스(RSS·Reddit)와 표본 1건인 소스는 칸이 빈다
+        mean = means.get(it["source"].split(" (")[0]) if isinstance(it.get("favs"), int) else None
+        ratio = f" · {it['favs'] / mean:.1f}×" if mean else ""
+        out += [f"- [ ] **{head}**", f"      `{it['source']}`{ratio} · {it['url']}", ""]
     if dropped:
         print(f"제목을 못 만든 항목 {dropped}건 제외", file=sys.stderr)
     return "\n".join(out)
@@ -505,7 +530,8 @@ def main() -> int:
         print(f"상한({MAX_ITEMS})에 밀려 제외된 소스: {', '.join(sorted(dropped))}")
     today = datetime.now(KST).strftime("%Y-%m-%d")
     out = DIGEST_DIR / f"{today}.md"
-    body = render(fresh, summarize(fresh))
+    # 분모는 상한에 잘리기 전의 collected — fresh 로 재면 표본이 소스당 1~2건이라 늘 1.0× 이다
+    body = render(fresh, summarize(fresh), source_means(collected))
 
     if out.exists():
         # 같은 날 재실행: 덮어쓰면 앞선 실행의 항목이 .seen.json 때문에
@@ -516,7 +542,9 @@ def main() -> int:
         out.write_text(
             f"# {today} 다이제스트\n\n"
             "**발행 전 논평 1줄 필수** (CAP-6) — 기계 요약만으로는 올리지 않는다.\n"
-            "판정 지표는 수집량이 아니라 **발행까지 간 건수**.\n\n"
+            "판정 지표는 수집량이 아니라 **발행까지 간 건수**.\n"
+            "출처 옆 `N.N×` 는 그 소스가 오늘 받아온 것들의 반응 수 평균 대비 배수다 "
+            "(반응 수가 없는 소스·표본 1건인 소스는 공란).\n\n"
             "## 후보\n\n" + body,
             encoding="utf-8",
         )
@@ -560,9 +588,29 @@ def selftest() -> int:
           {"source": "S", "title": "", "url": "https://a.com/2"},
           {"source": "S", "title": "ok", "url": "https://a.com/3"}]
     md = render(ph, ["(제목만 확인됨)", "(불완전 텍스트)", "요약 셋"])
-    # write_post·write_thread 가 쓰는 정규식 그대로 — 줄 형식이 안 바뀌었음을 같이 본다
-    got = re.findall(r"^- \[[ x]\] \*\*(.+?)\*\*\n\s*`[^`]*` · (\S+)", md, re.M)
+    # write_post:182 · write_thread:57 · publish_threads:50 이 쓰는 정규식 **그대로**.
+    # 2026-09-21: 여기만 `· (\S+)` 로 더 좁아서, 출처와 URL 사이에 칸이 하나 붙어도 통과했다
+    # (배수 칸이 그 자리에 들어간다). 진짜 파서와 같은 걸 써야 줄 형식 변경을 여기서 잡는다.
+    ITEM = r"^- \[[ x]\] \*\*(.+?)\*\*\n[ \t]*`[^`]*`[^\n]*?(https?://\S+)"
+    got = re.findall(ITEM, md, re.M)
     assert got == [("Real Title", "https://a.com/1"), ("요약 셋", "https://a.com/3")], got
+
+    # 배수: 그 소스가 이번 실행에 받아온 것들의 평균 대비. 분모가 없으면 칸이 빈다
+    mixed = [{"source": "HN (300pts)", "title": "a", "url": "https://e.com/1", "favs": 300},
+             {"source": "HN (100pts)", "title": "b", "url": "https://e.com/2", "favs": 100},
+             {"source": "Techmeme", "title": "c", "url": "https://e.com/3"},
+             {"source": "X @solo", "title": "d", "url": "https://e.com/4", "favs": 99},
+             {"source": "HN (None pts)", "title": "e", "url": "https://e.com/5", "favs": None}]
+    means = source_means(mixed)
+    assert means == {"HN": 200.0}, means          # 표본 1건(X)·숫자 없음(Techmeme)은 분모가 아니다
+    body = render(mixed, None, means)
+    assert "`HN (300pts)` · 1.5× · https://e.com/1" in body, body
+    assert "`HN (100pts)` · 0.5× · https://e.com/2" in body, body
+    assert "`Techmeme` · https://e.com/3" in body, body      # 숫자 없는 소스는 공란
+    assert "`X @solo` · https://e.com/4" in body, body       # 표본 1건도 공란
+    assert "`HN (None pts)` · https://e.com/5" in body, body  # points 가 null 이면 공란
+    # 배수가 붙어도 세 파서가 URL 을 그대로 집어낸다 — 이게 이 변경의 유일한 통합 위험이다
+    assert [u for _, u in re.findall(ITEM, body, re.M)] == [f"https://e.com/{i}" for i in range(1, 6)]
 
     # Reddit .rss는 표준 Atom — 전용 파서 없이 parse_feed가 먹어야 한다
     reddit = b"""<feed xmlns="http://www.w3.org/2005/Atom">
