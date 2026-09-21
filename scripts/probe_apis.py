@@ -26,11 +26,17 @@ import urllib.request
 RESEND = "https://api.resend.com"
 THREADS = "https://graph.threads.net/v1.0"
 TIMEOUT = 20
+# 2026-09-21 실측: UA 없이(urllib 기본 `Python-urllib/3.12`) Resend 를 치면 Cloudflare 가
+# 앞에서 `403 error code: 1010`("browser signature banned")을 돌려준다. Resend 가 준 답이
+# 아니라 Resend 에 닿지도 못한 것이다 — 키 권한 문제로 오진하기 딱 좋다.
+# collect_digest 와 같은 UA 를 쓴다.
+UA = "Mozilla/5.0 (compatible; inpilot-digest/1.0; +https://inpilot.dev)"
 
 
 def get(url: str, token: str) -> tuple[int, dict | list | str]:
     """GET 한 번. (상태코드, 파싱된 본문). 죽지 않는다 — 프로브가 한 칸 때문에 멈추면 안 된다."""
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"})
+    req = urllib.request.Request(
+        url, headers={"Authorization": f"Bearer {token}", "User-Agent": UA})
     try:
         with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
             return r.status, json.loads(r.read() or b"{}")
@@ -86,6 +92,9 @@ def probe_resend(key: str, audience: str) -> None:
     row("GET /broadcasts", str(code),
         "full access ✅ 뉴스레터 가능" if code == 200
         else f"{err(body)} ← sending 전용이면 증분 4 가 막힌다")
+
+    if code == 403 and "1010" in str(body):
+        print("     ⚠️ 1010 은 Cloudflare 가 막은 것이다 — 키 권한이 아니라 UA·IP 문제다. 결론 내지 말 것")
 
 
 # 권한 → 그 권한이 있어야 열리는 읽기 엔드포인트. 쓰기 권한(content_publish·manage_replies)은
