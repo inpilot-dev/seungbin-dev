@@ -1,0 +1,13 @@
+추론 모델이 똑똑해 보이는 진짜 이유는 <think> 태그가 아니다.
+
+DeepSeek-R1류 모델이 답을 내기 전에 보여주는 <think>...</think> 블록을 보면, 이 태그가 모델을 생각하게 만든다고 착각하기 쉽다. 하지만 태그를 떼도 같은 모델을 비슷한 성능으로 학습시킬 수 있다. 포맷이 능력을 만드는 게 아니다.
+
+RLVR(정답을 기계적으로 검증하는 강화학습)의 보상은 최종 답에만 붙고, 사고 과정 자체는 학습 신호에서 빠진다. DeepSeek-R1 논문도 중간 사고 과정을 학습에 써보려 했지만 도움이 안 돼서 포기했다. 모델이 실수를 되짚어 고치는 "aha moment"는 그 과정을 가르쳐서 나온 게 아니라, 답만 맞히라고 시킨 결과로 따라온 부산물이었다.
+
+그럼 계산량은 무엇이 정할까. GPT-5.6은 세 가지 사이즈로 나오고, 각 사이즈마다 5~6개의 reasoning effort 설정을 갖는다. 얼마나 잘 푸는지는 사이즈(훈련)가 정하고, 이번 답 하나에 계산을 얼마나 태울지는 effort 레벨이 정한다. 능력과 지출은 다른 축이다.
+
+<think> 태그 유무로 프롬프트를 손보고 있었다면, 그건 레버가 아니라 장식을 만지고 있었던 셈이다. 다음번엔 태그 대신 effort 레벨을 확인해보길.
+
+📷 Photos: Beyza Kaplan, Brett Sayles, Robert Clark, Valentin Ivantsov, Jonathan Borba, Sean Whang, Ferat Söylemez on Pexels
+
+#추론모델 #reasoningmodel #LLM #강화학습 #RLVR #DeepSeekR1 #GPT5 #인퍼런스스케일링 #AI개발 #프롬프트엔지니어링 #테크인사이트 #머신러닝
