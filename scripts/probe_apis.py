@@ -96,6 +96,27 @@ def probe_resend(key: str, audience: str) -> None:
     if code == 403 and "1010" in str(body):
         print("     ⚠️ 1010 은 Cloudflare 가 막은 것이다 — 키 권한이 아니라 UA·IP 문제다. 결론 내지 말 것")
 
+    # 2026-09-21 실측: 위 두 목록이 같은 ID 로 다른 수를 돌려줬다(segment 7 · audience 1).
+    # 그게 사실이면 app/api/subscribe 의 중복 검사가 헛돈다 — 그 검사는 목록이 아니라
+    # `GET /audiences/{id}/contacts/{email}` 단건 조회이고, 거기서 404 가 나면 "신규" 로 보고
+    # **환영 메일을 다시 쏜다**(route.ts 주석: "타인 이메일 반복 제출로 인한 메일 폭탄 차단").
+    # 그래서 목록 수가 아니라 그 단건 경로를 직접 친다.
+    # ⚠️ 구독자 주소는 공개 로그에 안 찍는다 — 상태 코드만 본다.
+    if audience:
+        code, body = get(f"{RESEND}/contacts?segment_id={urllib.parse.quote(audience)}", key)
+        data = body.get("data", []) if isinstance(body, dict) else []
+        emails = [c["email"] for c in data if isinstance(c, dict) and c.get("email")]
+        if not emails:
+            row("중복 검사 단건 조회", "skip", "구독자 0명 — 확인할 주소가 없다")
+        else:
+            code, _ = get(
+                f"{RESEND}/audiences/{urllib.parse.quote(audience)}"
+                f"/contacts/{urllib.parse.quote(emails[0])}", key)
+            row("중복 검사 단건 조회", str(code),
+                "✅ 기존 구독자를 찾는다" if code == 200
+                else "❌ 기존 구독자를 못 찾는다 → 재구독 시 환영 메일 재발송(메일 폭탄 방지 실패)")
+            print(f"     구독자 {len(emails)}명 중 1명으로 시험 (주소는 안 찍는다)")
+
 
 # 권한 → 그 권한이 있어야 열리는 읽기 엔드포인트. 쓰기 권한(content_publish·manage_replies)은
 # 읽기로 확인할 수 없어 뺐다 — 없는 걸 있다고 적느니 모른다고 둔다.
