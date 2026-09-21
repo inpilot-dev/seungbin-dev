@@ -1,0 +1,28 @@
+# 지도 #55 — Resend·Threads 실호출로 문서가 못 닫은 사실을 닫는다.
+#
+# cron 없음, push 트리거 없음. **사람이 누를 때만 돈다.**
+# 스크립트는 GET 만 하므로(probe_apis.py 문서 참조) 아무 때나 다시 눌러도 안전하다.
+# 쓰는 곳: 60일마다 Threads 토큰을 재발급한 직후 "권한이 그대로인가" 재기.
+name: probe
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: python scripts/probe_apis.py --selftest
+      - name: 실호출
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}
+          RESEND_AUDIENCE_ID: ${{ secrets.RESEND_AUDIENCE_ID }}
+          THREADS_TOKEN: ${{ secrets.THREADS_TOKEN }}
+        run: python scripts/probe_apis.py | tee $GITHUB_STEP_SUMMARY
