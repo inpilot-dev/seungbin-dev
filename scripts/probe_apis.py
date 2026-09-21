@@ -134,6 +134,15 @@ def probe_resend(key: str, audience: str) -> None:
                         hit = f"— {len(d)}건" if isinstance(d, list) else "— 단건"
                     row("  ↳ " + label, str(c), hit or (err(b) if c != 200 else ""))
 
+                # 대체 경로는 "있으면 200" 만으론 못 쓴다. **없는 주소에 404 를 줘야** 한다 —
+                # 전부 200 이면 신규 구독자가 죄다 "이미 구독중" 이 되어 구독이 통째로 막힌다.
+                # 지금 버그(재발송)보다 나쁜 고장이다. 그래서 없는 주소로 한 번 더 친다.
+                ghost = urllib.parse.quote(f"nonexistent-probe-{os.getpid()}@example.invalid")
+                c, _ = get(f"{RESEND}/contacts/{ghost}?segment_id={seg}", key)
+                row("  ↳ 없는 주소 → 404 여야 함", str(c),
+                    "✅ 신규는 신규로 본다 — 대체 경로로 안전" if c == 404
+                    else "❌ 신규도 '이미 구독중' 이 된다 — 이 경로로 바꾸면 구독이 막힌다")
+
 
 # 권한 → 그 권한이 있어야 열리는 읽기 엔드포인트. 쓰기 권한(content_publish·manage_replies)은
 # 읽기로 확인할 수 없어 뺐다 — 없는 걸 있다고 적느니 모른다고 둔다.
