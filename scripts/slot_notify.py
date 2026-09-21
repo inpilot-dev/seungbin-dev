@@ -36,7 +36,8 @@ def message(prs: list[dict], today: date) -> str:
         flags = "".join(f" [{f}]" for f in ("탈락", "보류") if f in names)
         groups.setdefault(kind, []).append(f"· #{p['number']} {p['title']}{flags}\n  {p['url']}")
     total = sum(len(v) for v in groups.values())
-    out = [f"🗳 슬롯 {today:%m/%d} — 결정할 원고 {total}건", "merge=승인 · close=반려 · /변경 · /주제 N", ""]
+    out = [f"🗳 슬롯 {today:%m/%d} — 결정할 원고 {total}건",
+           "merge=승인 · close=반려 · 블로그 /변경 · /주제 N · 카드 /다시", ""]
     for kind in sorted(groups):
         out += [f"{kind} {len(groups[kind])}건", *groups[kind], ""]
     if not total:
