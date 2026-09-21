@@ -21,6 +21,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import publish_instagram as ig  # noqa: E402
 import publish_queue as pq  # noqa: E402
+import send_newsletter as sn  # noqa: E402
 
 DAYS = "월화수목금토일"
 
@@ -54,7 +55,27 @@ def upcoming(today: date) -> list[str]:
         on = date.fromisoformat(json.loads(side.read_text(encoding="utf-8"))["publish_on"])
         if on >= today:
             rows.append((on, f"· {on:%m/%d}({DAYS[on.weekday()]}) 09:00 Threads — {side.stem}"))
+    rows += newsletter_rows(today)
     return [r for _, r in sorted(rows)] + cards_upcoming()
+
+
+def newsletter_rows(today: date) -> list[tuple[date, str]]:
+    """승인된 뉴스레터 원고 — 파일명이 곧 ISO 주차라 그 주 금요일이 발행일이다(Threads 와 같이 정렬된다).
+    장부에 있으면 이미 나갔다. 장부가 깨져도 슬롯 메시지는 나가야 하니 그때는 이 줄만 포기한다."""
+    try:
+        done = sn.load_ledger()
+    except Exception as e:  # noqa: BLE001
+        print(f"뉴스레터 장부 읽기 실패 — 그 줄은 생략: {e}", file=sys.stderr)
+        return []
+    rows = []
+    for md in sorted(sn.LEDGER.parent.glob("*.md")):
+        week = md.stem
+        if week in done or not sn.WEEK_RE.match(week) or not md.with_suffix(".html").exists():
+            continue
+        fri = datetime.strptime(week + "-5", "%G-W%V-%u").date()
+        if fri >= today:
+            rows.append((fri, f"· {fri:%m/%d}({DAYS[fri.weekday()]}) 09:00 뉴스레터 — {week}"))
+    return rows
 
 
 def cards_upcoming() -> list[str]:
@@ -92,14 +113,26 @@ def selftest() -> int:
         (ig.CARDS / name / "01.jpg").write_bytes(b"x")
         (ig.CARDS / name / "caption.txt").write_text("캡션\n", encoding="utf-8")
     ig.LEDGER.write_text('{"2026-09-07-gone": {"status": "published"}}', encoding="utf-8")
+    # 승인된 뉴스레터 — 파일명이 ISO 주차고 그 주 금요일이 발행일이다. 장부에 있으면 이미 나갔다
+    sn.LEDGER = Path(tempfile.mkdtemp()) / ".published.json"
+    for week in ("2026-W40", "2026-W35", "2026-W41"):
+        (sn.LEDGER.parent / f"{week}.md").write_text("# 제목\n", encoding="utf-8")
+        (sn.LEDGER.parent / f"{week}.html").write_text("<p>x</p>", encoding="utf-8")
+    (sn.LEDGER.parent / "2026-W42.md").write_text("# html 짝이 없다\n", encoding="utf-8")
+    sn.LEDGER.write_text('{"2026-W41": {"status": "sent"}}', encoding="utf-8")
     prs = [{"number": 42, "title": "post: x", "url": "https://g/42", "labels": [{"name": "원고:blog"}, {"name": "탈락"}]},
            {"number": 43, "title": "thread: y", "url": "https://g/43", "labels": [{"name": "원고:thread"}]},
            {"number": 44, "title": "cards: z", "url": "https://g/44", "labels": [{"name": "원고:card"}, {"name": "보류"}]},
+           {"number": 46, "title": "newsletter: 2026-W40", "url": "https://g/46", "labels": [{"name": "원고:newsletter"}]},
            {"number": 45, "title": "지도", "url": "https://g/45", "labels": [{"name": "wayfinder:map"}]}]
     m = message(prs, date(2026, 9, 27))
-    assert "결정할 원고 3건" in m and "#42 post: x [탈락]" in m and "#45" not in m, m
+    assert "결정할 원고 4건" in m and "#42 post: x [탈락]" in m and "#45" not in m, m
     assert "원고:card 1건" in m and "#44 cards: z [보류]" in m, m
+    assert "원고:newsletter 1건" in m and "#46 newsletter: 2026-W40" in m, m
     assert "09/28(월) 09:00 Threads — c-a" in m and "c-old" not in m, m
+    assert "10/02(금) 09:00 뉴스레터 — 2026-W40" in m, m          # W40 의 금요일
+    assert "2026-W35" not in m and "2026-W41" not in m, m         # 지난 주차 · 이미 나간 주차
+    assert "2026-W42" not in m, m                                 # .html 짝이 없으면 발행기가 안 본다
     assert "Instagram — 2026-09-14-old-deck (다음 차례)" in m, m
     assert "Instagram — 2026-09-21-new-deck (앞에 1개)" in m, m
     assert "2026-09-07-gone" not in m, m          # 이미 나간 덱
