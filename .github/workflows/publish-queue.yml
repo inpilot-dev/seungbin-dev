@@ -85,7 +85,9 @@ jobs:
           DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
         run: |
           set -euo pipefail
-          set +e; python scripts/publish_instagram.py 2>&1 | tee ig.txt; RC=${PIPESTATUS[0]}; set -e
+          # --check-urls: DRY 에서도 이미지 URL 을 HEAD 로 친다. 없으면 토큰 오기 전(10/26)까지
+          # "공개 URL 이 정말 200·image/jpeg 인가"를 한 번도 확인 못 한 채 첫 실게시를 맞는다 (2026-09-21)
+          set +e; python scripts/publish_instagram.py --check-urls 2>&1 | tee ig.txt; RC=${PIPESTATUS[0]}; set -e
           if ! grep -q '발행할 덱 없음$' ig.txt; then
             { echo "msg<<EOF"; echo "📸 Instagram"; grep -E '^(덱 |게시됨|실패|거부|건너뜀|\[DRY\])' ig.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
           fi
