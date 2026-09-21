@@ -1,0 +1,48 @@
+---
+topic: "언어 모델의 추론 과정에서 계산 자원을 제어하는 방법이 제시됨"
+sources: ["https://magazine.sebastianraschka.com/p/controlling-reasoning-effort-in-llms"]
+slug: "reasoning-effort-not-think-tag"
+title: "<think> 태그가 아니라 effort 레벨이다 — 추론 모델의 계산 제어"
+description: "추론 모델에서 계산량을 실제로 조절하는 건 <think> 태그의 유무가 아니라 reasoning effort 레벨이며, 보상은 사고 과정이 아니라 최종 답에만 걸린다."
+date: "2026-09-19"
+category: "Build"
+tags: ["추론모델", "강화학습", "인퍼런스스케일링"]
+---
+
+추론 모델의 계산량을 바꾸는 스위치는 `<think>` 태그가 아니라 reasoning effort 레벨이다.
+
+## <think> 태그는 장식이다
+
+DeepSeek-R1류 모델은 답을 내기 전에 `<think>...</think>` 블록으로 중간 사고 과정을 출력한다. 이걸 보면 "이 태그가 모델을 생각하게 만든다"고 착각하기 쉽다. 그런데 원문은 정반대로 말한다.
+
+> These `<think>` and `</think>` tags are cosmetic with respect to reasoning ability. They do not make the model reason, and they are not required to achieve good reasoning performance.
+— https://magazine.sebastianraschka.com/p/controlling-reasoning-effort-in-llms
+
+태그를 떼도 같은 모델을 비슷한 성능으로 학습시킬 수 있다. **포맷이 능력을 만드는 게 아니다.** 진짜 스위치는 다른 곳에 있다.
+
+## 보상은 답에만 걸리고, 사고 과정엔 안 걸린다
+
+RLVR(reinforcement learning with verifiable rewards)은 수학·코드처럼 정답을 기계적으로 검증할 수 있는 영역에서 답이 맞으면 1, 틀리면 0을 준다. 그런데 이 보상은 최종 답에만 붙는다. 사고 과정 자체는 학습 신호에서 빠진다.
+
+DeepSeek-R1 논문은 중간 사고 과정을 학습에 써보려고 시도했지만 도움이 안 됐다고 보고했고, 결국 쓰지 않았다. 모델이 사고 과정을 늘리고 자기 실수를 되짚어 고치는 "aha moment" 같은 행동은, 그 과정 자체를 가르친 게 아니라 답만 맞히라고 시켰더니 부산물로 나온 것이다. **원인이 아니라 결과**였다.
+
+## 사이즈가 아니라 effort 레벨이 계산량을 정한다
+
+GPT-5.6은 세 가지 사이즈로 나오고, 각 사이즈마다 대략 5~6개의 reasoning effort 설정을 갖는다. Ultra는 Max와 비슷한 effort 레벨을 쓰지만 서브에이전트 4개로 작업을 나눠 처리한다. 즉 "얼마나 잘 푸나"는 사이즈가 정하고, "이번 답 하나에 계산을 얼마나 태우나"는 effort 레벨이 정한다. 둘은 서로 다른 축이다.
+
+| 축 | 무엇을 조절하나 | 언제 정해지나 |
+| --- | --- | --- |
+| 사이즈/훈련 | RLVR로 굳어진 사고 능력 자체 | 학습 시점, 고정 |
+| effort 레벨 | 이번 요청에 쓸 계산량 | 요청마다, 가변 |
+
+훈련은 능력의 상한을 정하고, effort 레벨은 그 능력을 이번 답 하나에 얼마나 꺼내 쓸지를 정한다. **능력과 지출은 다른 문제다.**
+
+## 나는 태그가 아니라 레벨 쪽을 본다
+
+원문은 self-consistency(다수결 투표), self-refinement 같은 인퍼런스 스케일링 기법도 함께 다루는데, 나는 이 글에서 그쪽은 짚지 않기로 했다. 파이프라인에서 실제로 만질 수 있는 파라미터는 결국 effort 레벨이지 투표 횟수 설계가 아니라서다. `<think>` 태그 유무로 프롬프트를 손보던 습관이 있었다면, 그건 레버가 아니라 장식을 만지고 있었던 셈이다.
+
+## 안 한 것
+
+self-consistency, DeepSeekMath-V2 같은 극단적 인퍼런스 스케일링 기법의 구체적 구현은 다루지 않았다. 또한 RLVR 학습 파이프라인의 다단계 구성(SFT → RL → 재SFT)도 여기선 생략했다. reasoning effort 레벨을 실제 API에서 어떻게 호출하는지는 다음 글감이다.
+
+> 사고 능력은 훈련이 정하고, 이번 답의 계산량은 effort 레벨이 정한다. `<think>` 태그는 그 사이 어디에도 안 낀다.
