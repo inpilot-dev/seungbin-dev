@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       now:
-        description: "기준일 YYYY-MM-DD (기본 오늘 KST) — 창은 여기서 거꾸로 7일"
+        description: "기준 시각 — ISO 또는 YYYY-MM-DD (기본 지금 KST). 여기서 거꾸로 14일 안에 승인된 글 중 아직 안 실린 것"
         type: string
       dry_run:
         description: "파일만 만들고 PR 은 안 연다"
