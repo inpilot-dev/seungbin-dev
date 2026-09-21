@@ -188,6 +188,64 @@ jobs:
             | GH_TOKEN="$PAT" gh api repos/inpilot-dev/card-news/dispatches --input -
           gh pr comment "$PR" --body "📒 사진 장부 — card-news 에 \`$DECK\` 기록을 요청했다(같은 사진이 다음 덱에서 안 나오게)."
 
+  # 카드뉴스 스킬 ⑧-2 의 답은 둘이다 — 승인, 그리고 **재생성**. 위 잡이 승인(merge)이고 이게 재생성이다.
+  # 없으면 검수자가 이 PR 을 떠나 card-news 의 Actions 탭에서 render 를 손으로 돌려야 한다(ADR-0001 위반).
+  #
+  # 지시를 못 받는다 — 헤드리스 렌더 프롬프트는 고정이고, 모델은 결정론이 아니라 재렌더는 "3번 카드만
+  # 고치기" 가 아니라 **새 덱 한 벌**이다(card-news render.yml 의 「재실행 거부」와 같은 사실).
+  # 그래서 `/다시` 는 인자를 안 받고, 옛 덱은 반려로 버린다. 카드 한 장만 고치려면 대화형으로 스킬을 돌려라.
+  redo:
+    name: 카드뉴스 재생성 (/다시)
+    if: >-
+      github.event_name == 'issue_comment' && github.event.issue.pull_request != null
+      && github.event.comment.author_association == 'OWNER'
+      && contains(github.event.issue.labels.*.name, '원고:card')
+      && startsWith(github.event.comment.body, '/다시')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - name: 반려 · 덱 다시 요청
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PAT: ${{ secrets.GH_PAT }}
+          PR: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          [ -n "$PAT" ] || { echo "::error title=GH_PAT 없음::레포를 건너 dispatch 할 수 없다"; exit 1; }
+          # 슬러그는 PR 제목에 있다 — card-news render.yml 이 `cards: <슬러그>` 로 연다
+          TITLE=$(gh pr view "$PR" --json title --jq .title)
+          SLUG=${TITLE#cards: }
+          grep -qE '^[a-z0-9][a-z0-9-]{1,80}$' <<<"$SLUG" \
+            || { echo "::error title=슬러그를 못 읽었다::PR 제목 '$TITLE' 이 'cards: <슬러그>' 가 아니다"; exit 1; }
+          BRANCH=$(gh pr view "$PR" --json headRefName --jq .headRefName)
+
+          # 닫기부터 — 새 덱이 같은 날짜·슬러그를 뽑으면 브랜치 이름이 겹쳐 저쪽 push 가 죽는다.
+          # 그 정리를 사람에게 시키지 않는 게 이 잡의 절반이다(render.yml 의 푸시 실패 메시지 참조)
+          gh pr close "$PR" --comment "🔁 재생성 — 이 덱은 버린다. card-news 에 \`$SLUG\` 덱을 다시 요청했다(10~30분). 새 PR 로 온다."
+          gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$BRANCH" >/dev/null 2>&1 \
+            || echo "::warning title=브랜치 삭제 실패::$BRANCH — 새 덱 이름이 같으면 저쪽 push 가 죽는다. 손으로 지워라"
+
+          # 원문 제목·URL 은 main 의 글에서 읽는다. 없으면 빈 값 — 저쪽이 슬러그로 대신한다
+          MDX="content/$SLUG.mdx"
+          T=$(sed -n 's/^title: "\(.*\)"$/\1/p' "$MDX" 2>/dev/null | head -1 || true)
+          [ -f "$MDX" ] && U="https://inpilot.dev/posts/$SLUG" || U=""
+          jq -n --arg s "$SLUG" --arg t "$T" --arg u "$U" \
+            '{event_type:"card-news", client_payload:{slug:$s,title:$t,url:$u}}' \
+            | GH_TOKEN="$PAT" gh api repos/inpilot-dev/card-news/dispatches --input -
+          echo "::notice title=재생성 요청::$SLUG"
+      - name: Telegram
+        if: always()
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ${{ job.status == 'success' && '🔁 카드뉴스 재생성 요청 — 10~30분 뒤 새 PR' || '❌ 카드뉴스 재생성 실패' }}
+            ${{ github.event.issue.html_url }}
+
   command:
     name: 댓글 /변경 · /주제
     if: >-
