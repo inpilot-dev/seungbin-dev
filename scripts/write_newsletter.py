@@ -41,7 +41,6 @@ import write_post as wp  # noqa: E402
 ROOT = wp.ROOT
 OUT = ROOT / "drafts" / "newsletter"
 SITE = "https://inpilot.dev"
-WINDOW = 7          # 일. 「읽고 안 쓴 것」 후보를 보는 창
 LOOKBACK = 14       # 일. 글을 찾는 창 — 넉넉히 보고, 이미 실린 글은 sent_urls() 로 뺀다 (posts() 참조)
 MAX_READS = 5       # 「읽고 안 쓴 것」 줄 수. 더 넣으면 내 글이 목록에 묻힌다
 # Resend 가 브로드캐스트에서 치환하는 자리표시. 대량 메일에 수신 거부가 없으면 안 된다.
@@ -76,7 +75,7 @@ def posts(now: datetime) -> list[dict]:
     since = now - timedelta(days=LOOKBACK)
     r = subprocess.run(["gh", "pr", "list", "--state", "merged", "--label", "원고:blog", "--limit", "50",
                         "--search", f"merged:>={since - timedelta(days=1):%Y-%m-%d}",   # 검색은 날짜 단위라 하루 넉넉히
-                        "--json", "number,mergedAt,files"],
+                        "--json", "number,mergedAt,files,body"],   # body 는 reads() 가 쓴다 — 같은 PR, 같은 창
                        cwd=ROOT, capture_output=True, text=True, timeout=60)
     if r.returncode != 0:
         raise SystemExit(f"merge 된 블로그 원고 PR 조회 실패 — 뉴스레터를 만들지 않는다: {r.stderr.strip()[:300]}")
@@ -95,28 +94,25 @@ def posts(now: datetime) -> list[dict]:
                 continue
             done.add(url)               # 같은 글을 두 PR 이 건드렸어도 한 번만
             got.append({"title": meta.get("title", f.stem), "desc": meta.get("description", ""),
-                        "url": url, "merged": merged})
+                        "url": url, "merged": merged, "body": pr.get("body") or ""})
     return sorted(got, key=lambda p: p["merged"], reverse=True)
 
 
-def reads(frm: date, limit: int = MAX_READS) -> list[tuple[str, str]]:
-    """그 주 블로그 원고 PR 본문의 후보 중 **고르지 않았고 아직 안 쓴** 것 → [(제목, URL)].
-    gh 가 없거나 실패하면 빈 목록 — 이 칸이 빠져도 통은 나간다(글이 본문이다)."""
-    try:
-        r = subprocess.run(["gh", "pr", "list", "--state", "all", "--label", "원고:blog",
-                            "--limit", "30", "--json", "body,createdAt"],
-                           cwd=ROOT, capture_output=True, text=True, timeout=30)
-        prs = json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else []
-    except Exception as e:  # noqa: BLE001
-        print(f"원고 PR 조회 실패 — 「읽고 안 쓴 것」 없이 진행: {e}", file=sys.stderr)
-        return []
+def reads(ps: list[dict], limit: int = MAX_READS) -> list[tuple[str, str]]:
+    """②「읽고 안 쓴 것」 — ① 에 실린 글의 PR 본문에서 **고르지 않았고 아직 안 쓴** 후보 → [(제목, URL)].
+
+    ① 이 고른 PR 만 본다. 자기 조회·자기 날짜 창을 두지 않는다 (2026-09-22, 첫 구현이 그렇게 했다):
+    `createdAt` 기준 7일 창이었는데 블로그 PR 은 **토 06:00 생성 · 일 20:00 승인**이고 이 통은
+    **다음 일요일 11:00** 에 돈다 → 실린 글의 PR 은 생성일 기준 8일 전이라 **항상 창 밖**이었다.
+    `posts()` 가 `date` → `mergedAt` 으로 고친 그 함정을 여기만 그대로 안고 있었다.
+    ② 는 정의상 ① 의 부록이므로(#76 본문) 창을 맞추는 게 아니라 **같은 집합을 쓰는 게 맞다.**
+
+    본문이 비어 있으면 빈 목록 — 이 칸이 빠져도 통은 나간다(글이 본문이다)."""
     written = wp.written_urls()
     out: list[tuple[str, str]] = []
     seen = set()
-    for pr in prs:
-        if str(pr.get("createdAt", ""))[:10] < frm.isoformat():
-            continue
-        body = pr.get("body") or ""
+    for p in ps:
+        body = p.get("body") or ""
         # 고른 것은 `← 이번 원고` 다음 줄의 URL 이다 (write_post.queued_urls 와 같은 모양)
         chosen = {wp.norm_url(u) for u in re.findall(r"← 이번 원고\s*\n\s*(https?://\S+)", body)}
         for title, url in rc.candidates_from_body(body):
@@ -226,13 +222,12 @@ def main(argv: list[str]) -> int:
     if not ps:
         print(f"최근 {LOOKBACK}일 안에 승인(merge)됐고 아직 안 실린 글 0편 — 뉴스레터를 만들지 않는다(그 주는 안 나간다)")
         return 0
-    frm = today - timedelta(days=WINDOW - 1)
     days = sorted(p["merged"].astimezone(wp.KST).date() for p in ps)   # 실린 글의 승인일 — 창이 아니라 사실을 적는다
     span = f"{days[0]:%m/%d}" + (f"~{days[-1]:%m/%d}" if days[-1] != days[0] else "")
     # 글 제목엔 대개 `본론 — 부연` 이 붙어 있다. 그대로 쓰면 줄표가 둘인 메일 제목이 되고
     # 받은편지함에서 뒤가 잘린다 — 앞 토막만 쓴다 (제목 전문은 본문 첫 줄에 그대로 있다)
     subject = f"이번 주 inpilot.dev — {ps[0]['title'].split(' — ')[0]}"
-    rs = reads(frm)
+    rs = reads(ps)
 
     OUT.mkdir(parents=True, exist_ok=True)
     md, htm = OUT / f"{week}.md", OUT / f"{week}.html"
@@ -298,7 +293,13 @@ def selftest() -> int:
     (ROOT / "content" / "sat-post.mdx").write_text(front.format(t="토요일에 만든 글"), encoding="utf-8")
     (ROOT / "content" / "sent-post.mdx").write_text(front.format(t="이미 실린 글"), encoding="utf-8")
     F = lambda *p: [{"path": x} for x in p]  # noqa: E731
-    prs = [{"number": 1, "mergedAt": "2026-09-27T11:10:00Z", "files": F("content/sat-post.mdx", "scripts/x.py")},
+    body = ("## 주제 후보 — 검수자가 고른다\n\n"
+            "1. **고른 것**  ← 이번 원고  \n   https://ex.com/chosen\n"
+            "2. **안 고른 것**  \n   https://ex.com/free\n"
+            "3. **이미 쓴 것**  \n   https://ex.com/written\n"
+            "4. **(제목만 확인됨)**  \n   https://ex.com/noname\n\n## 원고\n")
+    prs = [{"number": 1, "mergedAt": "2026-09-27T11:10:00Z", "body": body,
+            "files": F("content/sat-post.mdx", "scripts/x.py")},
            {"number": 2, "mergedAt": "2026-09-27T11:20:00Z", "files": F("content/reverted.mdx")},     # merge 뒤 revert — 파일 없음
            {"number": 3, "mergedAt": "2026-09-27T11:30:00Z", "files": F("drafts/failed.mdx")},        # 탈락 원고 merge — 게시 아님
            {"number": 4, "mergedAt": "2026-09-27T11:40:00Z", "files": F("content/sent-post.mdx")},    # 지난 통에 이미 실림
@@ -313,6 +314,12 @@ def selftest() -> int:
     assert [p["title"] for p in got] == ["토요일에 만든 글"], got
     assert got[0]["url"] == f"{SITE}/posts/sat-post"
     assert [p["title"] for p in posts(kst("2026-10-05T09:00:00"))] == ["토요일에 만든 글"]   # cron 이 빠져 월요일에 손으로 돌려도
+    # ② 도 같은 흐름에서 나와야 한다. 첫 구현은 자기 `createdAt` 7일 창을 따로 써서, 실린 글의 PR 이
+    # 늘 8일 전(토 생성)이라 **정상 흐름에서 언제나 0줄**이었다(2026-09-22 발견). 그 회귀를 막는다
+    real_written = wp.written_urls
+    wp.written_urls = lambda: {"https://ex.com/written"}                        # noqa: E731
+    assert reads(got) == [("안 고른 것", "https://ex.com/free")], reads(got)
+    wp.written_urls = real_written
     assert posts(kst("2026-10-12T11:00:00")) == []                              # LOOKBACK 밖
     (OUT / "2026-W41.md").write_text(f"{SITE}/posts/sat-post\n", encoding="utf-8")
     assert posts(kst("2026-10-04T11:00:00")) == []                              # 한 번 실린 글은 다시 안 실린다
@@ -325,21 +332,14 @@ def selftest() -> int:
     subprocess.run = real_run
     ROOT = saved_root
 
-    # reads(): 고른 것(← 이번 원고)·이미 쓴 것·자리표시 제목은 빠진다. gh 실패는 빈 목록
-    body = ("## 주제 후보 — 검수자가 고른다\n\n"
-            "1. **고른 것**  ← 이번 원고  \n   https://ex.com/chosen\n"
-            "2. **안 고른 것**  \n   https://ex.com/free\n"
-            "3. **이미 쓴 것**  \n   https://ex.com/written\n"
-            "4. **(제목만 확인됨)**  \n   https://ex.com/noname\n\n## 원고\n")
-    real_run, real_written = subprocess.run, wp.written_urls
-    subprocess.run = lambda *a_, **k: subprocess.CompletedProcess(  # noqa: E731
-        [], 0, json.dumps([{"body": body, "createdAt": "2026-09-25T00:00:00Z"},
-                           {"body": body, "createdAt": "2026-09-01T00:00:00Z"}]), "")
+    # reads(): 고른 것(← 이번 원고)·이미 쓴 것·자리표시 제목은 빠진다. 본문이 없으면 빈 목록
+    real_written = wp.written_urls
     wp.written_urls = lambda: {"https://ex.com/written"}                       # noqa: E731
-    assert reads(date(2026, 9, 21)) == [("안 고른 것", "https://ex.com/free")], reads(date(2026, 9, 21))
-    subprocess.run = lambda *a_, **k: (_ for _ in ()).throw(FileNotFoundError("gh"))  # noqa: E731
-    assert reads(date(2026, 9, 21)) == []
-    subprocess.run, wp.written_urls = real_run, real_written
+    P = lambda b: [{"body": b}]  # noqa: E731
+    assert reads(P(body)) == [("안 고른 것", "https://ex.com/free")], reads(P(body))
+    assert reads(P(body) + P(body)) == [("안 고른 것", "https://ex.com/free")]   # 같은 후보를 두 번 안 싣는다
+    assert reads(P("")) == [] and reads([]) == []                              # 본문 없음 · 글 없음
+    wp.written_urls = real_written
     print("selftest ok")
     return 0
 
