@@ -19,6 +19,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import publish_instagram as ig  # noqa: E402
 import publish_queue as pq  # noqa: E402
 
 DAYS = "월화수목금토일"
@@ -53,7 +54,18 @@ def upcoming(today: date) -> list[str]:
         on = date.fromisoformat(json.loads(side.read_text(encoding="utf-8"))["publish_on"])
         if on >= today:
             rows.append((on, f"· {on:%m/%d}({DAYS[on.weekday()]}) 09:00 Threads — {side.stem}"))
-    return [r for _, r in sorted(rows)]
+    return [r for _, r in sorted(rows)] + cards_upcoming()
+
+
+def cards_upcoming() -> list[str]:
+    """승인된 덱의 줄. 날짜가 없어 Threads 와 같이 정렬하지 못한다 — 목요일마다 앞에서 하나씩 나간다."""
+    done = ig.load_ledger()
+    queued, seen = [], set()
+    while (slug := ig.next_deck(done, seen)) is not None:
+        seen.add(slug)
+        queued.append(slug)
+    return [f"· 목 09:00 Instagram — {s}" + (" (다음 차례)" if i == 0 else f" (앞에 {i}개)")
+            for i, s in enumerate(queued)]
 
 
 def main(argv: list[str]) -> int:
@@ -72,12 +84,25 @@ def selftest() -> int:
     (pq.DIR / "c-a.md").write_text("글\n", encoding="utf-8")
     (pq.DIR / "c-old.json").write_text('{"publish_on": "2026-09-01"}', encoding="utf-8")
     (pq.DIR / "c-old.md").write_text("글\n", encoding="utf-8")
+    # 승인된 덱 둘 — 폴더 이름의 날짜가 발행 순서다(publish_instagram.next_deck 의 이름순 가정)
+    ig.CARDS = Path(tempfile.mkdtemp())
+    ig.LEDGER = ig.CARDS / ".published.json"
+    for name in ("2026-09-14-old-deck", "2026-09-21-new-deck", "2026-09-07-gone"):
+        (ig.CARDS / name).mkdir()
+        (ig.CARDS / name / "01.jpg").write_bytes(b"x")
+        (ig.CARDS / name / "caption.txt").write_text("캡션\n", encoding="utf-8")
+    ig.LEDGER.write_text('{"2026-09-07-gone": {"status": "published"}}', encoding="utf-8")
     prs = [{"number": 42, "title": "post: x", "url": "https://g/42", "labels": [{"name": "원고:blog"}, {"name": "탈락"}]},
            {"number": 43, "title": "thread: y", "url": "https://g/43", "labels": [{"name": "원고:thread"}]},
+           {"number": 44, "title": "cards: z", "url": "https://g/44", "labels": [{"name": "원고:card"}, {"name": "보류"}]},
            {"number": 45, "title": "지도", "url": "https://g/45", "labels": [{"name": "wayfinder:map"}]}]
     m = message(prs, date(2026, 9, 27))
-    assert "결정할 원고 2건" in m and "#42 post: x [탈락]" in m and "#45" not in m, m
+    assert "결정할 원고 3건" in m and "#42 post: x [탈락]" in m and "#45" not in m, m
+    assert "원고:card 1건" in m and "#44 cards: z [보류]" in m, m
     assert "09/28(월) 09:00 Threads — c-a" in m and "c-old" not in m, m
+    assert "Instagram — 2026-09-14-old-deck (다음 차례)" in m, m
+    assert "Instagram — 2026-09-21-new-deck (앞에 1개)" in m, m
+    assert "2026-09-07-gone" not in m, m          # 이미 나간 덱
     assert "아무것도 안 나간다" in message([], date(2026, 9, 27))
     print("selftest ok")
     return 0

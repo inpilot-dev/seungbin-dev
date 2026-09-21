@@ -27,7 +27,7 @@ jobs:
         run: |
           set -euo pipefail
           NOW=$(date -u +%s)
-          for L in "원고:blog" "원고:thread"; do
+          for L in "원고:blog" "원고:thread" "원고:card"; do
             gh pr list --state open --label "$L" --limit 50 --json number,createdAt,labels,title \
               --jq '.[] | "\(.number)\t\(.createdAt)\t\([.labels[].name]|join(","))\t\(.title)"'
           done | sort -u | while IFS=$'\t' read -r N C LABELS T; do
