@@ -117,6 +117,23 @@ def probe_resend(key: str, audience: str) -> None:
                 else "❌ 기존 구독자를 못 찾는다 → 재구독 시 환영 메일 재발송(메일 폭탄 방지 실패)")
             print(f"     구독자 {len(emails)}명 중 1명으로 시험 (주소는 안 찍는다)")
 
+            if code != 200:
+                # 그럼 새 API 에서 "이 주소가 이미 있나" 는 어떻게 묻나. 후보를 쳐 보고
+                # 200 을 주는 것을 route.ts 의 대체 경로로 쓴다. 문서 대신 실호출로 고른다.
+                e = urllib.parse.quote(emails[0])
+                seg = urllib.parse.quote(audience)
+                for label, path in (
+                    ("GET /contacts/{email}?segment_id=", f"/contacts/{e}?segment_id={seg}"),
+                    ("GET /contacts?segment_id=&email=", f"/contacts?segment_id={seg}&email={e}"),
+                    ("GET /contacts/{email}", f"/contacts/{e}"),
+                ):
+                    c, b = get(RESEND + path, key)
+                    hit = ""
+                    if c == 200 and isinstance(b, dict):
+                        d = b.get("data")
+                        hit = f"— {len(d)}건" if isinstance(d, list) else "— 단건"
+                    row("  ↳ " + label, str(c), hit or (err(b) if c != 200 else ""))
+
 
 # 권한 → 그 권한이 있어야 열리는 읽기 엔드포인트. 쓰기 권한(content_publish·manage_replies)은
 # 읽기로 확인할 수 없어 뺐다 — 없는 걸 있다고 적느니 모른다고 둔다.
