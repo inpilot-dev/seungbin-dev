@@ -1,0 +1,16 @@
+AI 에이전트가 만든 결과는 그대로 재현됐다. 그런데 그 결과를 어떻게 만들었는지는, 나중에는 아무도 다시 볼 수 없었다.
+
+Simon Willison이 ChatGPT Work의 GPT-6 Astra(Max)에게 시킨 건 하나였다. 집 주소에서 출발해 돌아오는 러닝 루트를 OpenStreetMap 데이터로 찾아 달라는 것. 5K 루프, 10K 루프, 임베드된 시각화, GPX·GeoJSON 파일까지 27분 만에 전부 나왔다.
+
+방법을 묻자 에이전트는 Nominatim으로 주소를 찾고 Overpass로 도로망을 받아 로컬에서 루프를 계산했다고 답했다. 문제는 이게 실행 로그가 아니라 사후 요약이라는 것. 실제로 돌아간 코드는 화면 어디에도 없었다. Willison은 이 상태를 "an anti-feature"라고 불렀다.
+
+더 결정적인 건 그다음이다. Python 코드 사본을 다시 요청했을 때는 아예 받지 못했다. 스레드가 압축(compaction)되면서 지난 대화가 요약으로 바뀌었고, 그 안에 있던 원본 코드도 함께 사라졌다. Willison의 결론은 압축 전 텍스트를 보존하고 에이전트 도구 호출로 다시 꺼낼 수 있어야 한다는 것 — 안 그러면 결과는 남고 과정은 증발한다.
+
+이건 Willison 한 사람의 단발 테스트다. 루트 품질이 매번 이만큼 나오는지, 27분이 항상 걸리는지, 압축 뒤 코드가 정말 복구 불가능한지는 재현된 벤치마크가 아니라 한 번의 관찰이라는 점은 짚어 둔다.
+
+에이전트를 쓸 때, 결과만큼 과정이 어디에 남는지도 확인해보세요.
+
+원문: simonwillison.net (Simon Willison, 2026-09-12)
+📷 Photos: Oktay Köseoğlu, Atahan Demir, Nemuel Sereti, Mahdi Bafande, Roman Kaiuk, Robert Clark, TimSon Foox, 3D Render on Pexels
+
+#AI에이전트 #GPT6 #Astra #ChatGPT #압축 #컴팩션 #AI투명성 #AI도구 #개발자 #코딩 #LLM #프롬프트엔지니어링 #에이전트워크플로우 #AI뉴스
