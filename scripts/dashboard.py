@@ -10,6 +10,15 @@
   구독자    Resend 세그먼트의 unsubscribed==false (send_newsletter.count_subscribers 재사용)
   Threads   /me/threads_insights 7일 합 + followers_count 스냅숏(since/until 안 받음, #46)
 
+인바운드(2026-09-22)만 창이 다르다 — 7일이 아니라 9/21~12/06 **누적**이고, 계기판이 아니라
+**판정 기준**이다(CONTEXT.md 「인바운드」, 12/06 다섯째 지표 4건).
+자동 집계가 없는 유일한 칸이다: 메일은 제목 `[진단] <글 제목>` 으로 오고 Threads 답글·DM 은 API 로
+"어느 게시물을 지목했는지" 를 못 준다. 그래서 세는 건 사람이고, 이 스크립트는 **적어 두는 자리**만 준다.
+  python3 scripts/dashboard.py --inbound "메일 · <글 제목> · 진단 콜 문의"
+`state/inbound.jsonl` 에 한 줄 붙고 슬롯 메시지에 누적이 뜬다. 커밋해야 12/06 까지 남는다.
+  # ponytail: 손 입력이다. Gmail API OAuth 를 붙이면 메일 쪽은 자동이 되지만, 11주에 4건을 세려고
+  # 토큰 수명·갱신·스코프를 지는 값이 아니다. 주 2건을 넘겨 손 분류가 무너지면 그때 붙인다.
+
 왜: 개입 시간(≤30분/주)은 잴 수 없다. 결정·수시 결정 건수를 대리 지표로 남겨 10/18·12/06 판정에 쓴다.
 출처 하나가 죽어도 슬롯 메시지는 나가야 한다 — gh 실패는 "조회 실패", Secret 없음은 "미연결", 항상 exit 0.
 
@@ -21,6 +30,7 @@
 사용:
   python3 scripts/dashboard.py                       # stdout 에 계기판
   python3 scripts/dashboard.py --append              # + state/dashboard.jsonl 에 한 줄
+  python3 scripts/dashboard.py --inbound "<채널> · <글> · <한 줄>"   # 인바운드 1건 적기
   python3 scripts/dashboard.py --now 2026-09-20T20:00:00+09:00
   python3 scripts/dashboard.py --selftest
 """
@@ -41,6 +51,9 @@ import send_newsletter as sn  # noqa: E402
 KST = timezone(timedelta(hours=9))
 ROOT = Path(__file__).resolve().parent.parent
 JSONL = ROOT / "state" / "dashboard.jsonl"
+INBOUND = ROOT / "state" / "inbound.jsonl"
+INBOUND_FROM = "2026-09-21"   # 세기 시작한 날 (CTA 가 붙은 날). 그 전 건은 세지 않는다
+INBOUND_GOAL = 4              # 12/06 판정 임계. 근거 없는 첫 눈금이다 — 못 넘기면 숫자를 내리지 말고 왜 0인지부터 본다
 LEDGERS = {  # 채널: (장부, 게시로 치는 status)
     "threads": (ROOT / "drafts" / "threads" / ".published.json", {"published"}),
     "cards": (ROOT / "drafts" / "cards" / ".published.json", {"published"}),
@@ -89,6 +102,40 @@ def ledger_count(path: Path, ok: set, frm: datetime, to: datetime) -> int:
     return sum(1 for e in led.values()
                if isinstance(e, dict) and e.get("status") in ok and e.get("at")
                and frm <= ts(e["at"]) <= to)
+
+
+def inbound_count() -> int | str:
+    """INBOUND_FROM 이후 인바운드 누적. 7일 창이 아니다 — 12/06 까지 쌓는 값이다.
+    한 줄이라도 못 읽으면 "조회 실패" — 판정 지표라 조용히 덜 세는 게 제일 나쁘다(장부 규칙과 같은 태도)."""
+    if not INBOUND.exists():
+        return 0
+    n = 0
+    for line in INBOUND.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            at = json.loads(line)["at"]
+        except Exception:  # noqa: BLE001 — 깨진 줄 · at 없음 · 객체 아님
+            return "조회 실패"
+        if not isinstance(at, str):
+            return "조회 실패"
+        if at[:10] >= INBOUND_FROM:
+            n += 1
+    return n
+
+
+def add_inbound(note: str) -> int | str:
+    """인바운드 1건 적기 → 새 누적. 중복은 안 막는다 — 같은 사람이 두 글을 지목하면 두 건이다.
+    적는 것도 커밋도 사람이 한다. 이 파일이 12/06 판정의 유일한 근거라 기억에 기대지 않는다."""
+    note = " ".join(note.split())
+    if not note:
+        raise SystemExit("--inbound 뒤에 한 줄이 필요하다 "
+                         "(예: --inbound '메일 · 압축 요약이 탈옥을 심었다 · 진단 콜 문의')")
+    INBOUND.parent.mkdir(parents=True, exist_ok=True)
+    with INBOUND.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"at": datetime.now(KST).isoformat(timespec="seconds"), "note": note},
+                           ensure_ascii=False) + "\n")
+    return inbound_count()
 
 
 def subscribers() -> int | str:
@@ -154,6 +201,7 @@ def collect(now: datetime) -> dict:
     d["published"] = None if ch is None or None in ch.values() else sum(ch.values())
     d["subscribers"] = subscribers()
     d["threads"] = threads(frm, now)
+    d["inbound"] = inbound_count()
     return d
 
 
@@ -181,7 +229,12 @@ def render(d: dict, prev: dict | None = None) -> str:
                      + f" · 팔로워 {t.get('followers')}{_delta(t.get('followers'), pf)}")
     else:
         lines.append(f"Threads {t}")
+    # 여기부터는 계기판이 아니라 판정 기준이다 (CONTEXT.md 「인바운드」)
+    ib = d["inbound"]
+    lines.append(f"인바운드 {ib}건 (누적 {INBOUND_FROM}~ · 12/06 판정 {INBOUND_GOAL}건)"
+                 if isinstance(ib, int) else f"인바운드 {ib}")
     lines.append("※ 개입 시간은 재지 않는다 — 결정·수시(슬롯 밖) 결정 건수가 대리 지표다.")
+    lines.append("※ 인바운드는 자동 집계가 없다 — 받으면 `dashboard.py --inbound '<채널> · <글> · <한 줄>'` + 커밋.")
     return "\n".join(lines)
 
 
@@ -190,7 +243,8 @@ def row(d: dict) -> dict:
     return {"week_end": f"{d['to']:%Y-%m-%d}", "decisions": d["decisions"], "adhoc": d["adhoc"],
             "auto_rejected": d["auto_rejected"], "publish_failures": d["publish_failures"],
             "published": d["published"], "subscribers": num(d["subscribers"]),
-            "threads": d["threads"] if isinstance(d["threads"], dict) else None}
+            "threads": d["threads"] if isinstance(d["threads"], dict) else None,
+            "inbound": num(d["inbound"])}
 
 
 def last_row() -> dict | None:
@@ -212,7 +266,13 @@ def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(description="주간 계기판")
     ap.add_argument("--now", help="ISO 시각 (기본 지금). 시간대 없으면 KST")
     ap.add_argument("--append", action="store_true", help="state/dashboard.jsonl 에 한 줄 추가")
+    ap.add_argument("--inbound", metavar="한 줄", help="인바운드 1건 적고 끝낸다 — '<채널> · <글> · <한 줄>'")
     a = ap.parse_args(argv[1:])
+    if a.inbound is not None:
+        # 계기판 전체를 만들지 않는다 — 적는 데 gh·Resend·Threads 가 필요할 이유가 없다
+        print(f"인바운드 적음 — 누적 {add_inbound(a.inbound)}건 / 12/06 판정 {INBOUND_GOAL}건\n"
+              f"  {INBOUND.relative_to(ROOT)} 를 커밋해야 남는다")
+        return 0
     now = datetime.fromisoformat(a.now) if a.now else datetime.now(KST)
     now = (now if now.tzinfo else now.replace(tzinfo=KST)).astimezone(KST)
     d = collect(now)
@@ -230,7 +290,7 @@ def selftest() -> int:
     import urllib.parse
     import urllib.request
     from contextlib import redirect_stderr, redirect_stdout
-    global ROOT, JSONL, LEDGERS
+    global ROOT, JSONL, LEDGERS, INBOUND
 
     now = datetime(2026, 9, 20, 20, 30, tzinfo=KST)          # 일요일 슬롯 안
     L = lambda *n: [{"name": x} for x in n]  # noqa: E731
@@ -285,7 +345,7 @@ def selftest() -> int:
 
     import urllib.error
     real = (subprocess.run, urllib.request.urlopen)
-    saved = (ROOT, JSONL, LEDGERS)
+    saved = (ROOT, JSONL, LEDGERS, INBOUND)
     envk = ("RESEND_API_KEY", "RESEND_AUDIENCE_ID", "THREADS_TOKEN")
     saved_env = {k: os.environ.get(k) for k in envk}
     subprocess.run, urllib.request.urlopen = fake_run, fake_urlopen
@@ -300,6 +360,7 @@ def selftest() -> int:
         with tempfile.TemporaryDirectory() as tmp:
             ROOT = Path(tmp)
             JSONL = ROOT / "state" / "dashboard.jsonl"
+            INBOUND = ROOT / "state" / "inbound.jsonl"
             LEDGERS = {k: (ROOT / p.relative_to(saved[0]), ok) for k, (p, ok) in saved[2].items()}
             for k in envk:
                 os.environ.pop(k, None)
@@ -321,6 +382,7 @@ def selftest() -> int:
             assert "발행 실패 1건" in out, out
             assert "게시 4건 (blog 2 · threads 1 · cards 0 · newsletter 1)" in out, out
             assert "구독자 미연결" in out and "Threads 미연결" in out and "대리 지표" in out, out
+            assert "인바운드 0건 (누적 2026-09-21~ · 12/06 판정 4건)" in out, out   # 파일 없으면 0
             assert len(lines) <= 12
             assert not JSONL.exists()                                          # --append 없으면 안 쓴다
             q = gh_calls[0][gh_calls[0].index("--search") + 1]
@@ -335,10 +397,36 @@ def selftest() -> int:
             assert r == {"week_end": "2026-09-20", "decisions": 3, "adhoc": 2, "auto_rejected": 1,
                          "publish_failures": 1, "published": 4, "subscribers": 2,
                          "threads": {"views": 15, "likes": 3, "replies": 1, "reposts": 0, "quotes": 2,
-                                     "followers": 40 + 2}}, r
+                                     "followers": 40 + 2}, "inbound": 0}, r
             JSONL.write_text(json.dumps({**r, "subscribers": 5, "threads": {"followers": 40}}) + "\n")
             _, out, _ = run([])
             assert "구독자 2명 (-3)" in out and "팔로워 42 (+2)" in out, out
+
+            # 인바운드: 적으면 누적이 오르고, 창 밖(9/21 이전)은 안 센다. 적는 경로는 네트워크 0
+            gh_calls.clear(); net.clear()
+            code, out, _ = run(["--inbound", "  메일 ·  압축 요약 글 ·  진단 콜 문의  "])
+            assert code == 0 and "누적 1건" in out and gh_calls == [] and net == [], (out, gh_calls, net)
+            e = json.loads(INBOUND.read_text().splitlines()[-1])
+            assert e["note"] == "메일 · 압축 요약 글 · 진단 콜 문의" and e["at"][:2] == "20", e
+            with INBOUND.open("a", encoding="utf-8") as f:                     # 창 밖 한 건 — 안 센다
+                f.write(json.dumps({"at": "2026-09-20T10:00:00+09:00", "note": "옛것"}) + "\n")
+            assert inbound_count() == 1, INBOUND.read_text()
+            _, out, _ = run([])
+            assert "인바운드 1건 (누적" in out, out
+            try:
+                add_inbound("   ")
+                raise AssertionError("빈 인바운드를 받았다")
+            except SystemExit:
+                pass
+            # 깨진 줄은 0 이 아니라 "조회 실패" — 판정 지표가 조용히 덜 세면 안 된다
+            INBOUND.write_text('{"at": "2026-09-25T00:00:00+09:00"}\n{깨짐\n', encoding="utf-8")
+            assert inbound_count() == "조회 실패"
+            _, out, _ = run(["--append"])
+            assert "인바운드 조회 실패" in out, out
+            assert json.loads(JSONL.read_text().splitlines()[-1])["inbound"] is None
+            INBOUND.write_text('{"at": 20260925}\n', encoding="utf-8")
+            assert inbound_count() == "조회 실패"
+            INBOUND.unlink()
 
             # gh 실패·API 실패·깨진 장부: 해당 줄만 "조회 실패", exit 0, 토큰 안 샘
             state["gh_fail"] = True
@@ -354,7 +442,7 @@ def selftest() -> int:
             assert r["decisions"] is None and r["published"] is None and r["threads"] is None, r
     finally:
         subprocess.run, urllib.request.urlopen = real
-        ROOT, JSONL, LEDGERS = saved
+        ROOT, JSONL, LEDGERS, INBOUND = saved
         for k, v in saved_env.items():
             if v is None:
                 os.environ.pop(k, None)
