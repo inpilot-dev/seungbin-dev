@@ -62,11 +62,16 @@ SRC_MIN = 1500         # 이보다 짧으면 블로그 출처가 아니다 — 4
                        # 본문 1,200자 이상을 출처 수치만으로 써야 하므로 얇은 출처는 애초에 후보가 아니다
 MAX_PROBES = 20        # 후보 가독성 탐침 상한. fetch 는 건당 최대 20초라 여기서 막아야 잡이 안 늘어진다
 _SRC_CACHE: dict[str, tuple[str, str]] = {}
+LOCAL_SRC = "(로컬 출처)"   # repo 밖 파일을 출처로 준 글의 frontmatter 표기. cite() 참조
 
 
 def load_source(ref: str) -> tuple[str, str]:
     """(라벨, 본문). URL 이면 받아서 텍스트만, 아니면 로컬 파일. 한 번 읽은 건 캐시 — 후보 탐침 때 읽은
-    본문을 생성 때 다시 안 받는다."""
+    본문을 생성 때 다시 안 받는다.
+
+    못 읽는 로컬 파일은 **빈 본문**으로 돌려준다(예외 아님) — 호출부가 "못 읽은 출처로는 안 쓴다" 를
+    이미 구현하고 있다(main 의 `출처가 비었다` · `못 읽었다`). 러너에서 `/변경` 이 repo 밖 경로를
+    되읽을 때 여기로 떨어진다."""
     if ref in _SRC_CACHE:
         return _SRC_CACHE[ref]
     if ref.startswith("http"):
@@ -74,9 +79,28 @@ def load_source(ref: str) -> tuple[str, str]:
         out = (ref, (html_to_text(raw) if raw else "")[:SRC_MAX])
     else:
         p = Path(ref)
-        out = (str(p), p.read_text(encoding="utf-8")[:SRC_MAX])
+        try:
+            out = (str(p), p.read_text(encoding="utf-8")[:SRC_MAX])
+        except OSError as e:
+            print(f"  출처 파일을 못 읽었다: {ref[:120]} — {e}", file=sys.stderr)
+            out = (str(p), "")
     _SRC_CACHE[ref] = out
     return out
+
+
+def cite(ref: str) -> str:
+    """frontmatter `sources:` 에 남길 표기.
+
+    **이 저장소는 공개고, 커밋은 force-push 해도 SHA 로 계속 읽힌다.** 그래서 repo 밖 로컬 파일은
+    경로도 파일 이름도 싣지 않는다 — vault 노트를 출처로 주면(`~/brain/wiki/<개념>.md`) 경로와
+    노트 이름이 그대로 공개 MDX 에 박힌다. 그 값은 아무에게도 쓸모가 없다: 독자는 못 열고,
+    러너엔 `~/brain` 이 없어 `/변경` 재생성도 그걸로는 못 읽는다(2026-09-22, 트랙 B Q1)."""
+    if ref.startswith("http"):
+        return ref
+    try:
+        return str(Path(ref).resolve().relative_to(ROOT))   # repo 안이면 상대경로 — 되읽기도 된다
+    except ValueError:
+        return LOCAL_SRC
 
 
 def readable(url: str) -> bool:
@@ -233,7 +257,9 @@ def build_prompt(topic: str, sources: list[tuple[str, str]], feedback: str = "",
     voice = VOICE.read_text(encoding="utf-8") if VOICE.exists() else "(없음)"
     refs = "\n\n".join(f"### 참고 글: {r}\n" + (CONTENT / f"{r}.mdx").read_text(encoding="utf-8")[:3500]
                        for r in REFS if (CONTENT / f"{r}.mdx").exists())
-    srcs = "\n\n".join(f"### 출처 {i + 1}: {label}\n{text}" for i, (label, text) in enumerate(sources))
+    # 라벨도 cite() 를 지난다. frontmatter 만 가리면 절반이다 — 모델이 프롬프트의 경로를 **본문에**
+    # 인용하면 그건 inpilot.dev 에 렌더된다(frontmatter `sources:` 는 사이트가 안 그린다)
+    srcs = "\n\n".join(f"### 출처 {i + 1}: {cite(label)}\n{text}" for i, (label, text) in enumerate(sources))
     today = datetime.now(KST).strftime("%Y-%m-%d")
     return f"""내 기술 블로그(inpilot.dev)에 올릴 글을 써라. 주제: {topic}
 
@@ -439,6 +465,20 @@ def main(argv: list[str]) -> int:
     sources = [(l, t) for l, t in sources if t.strip()]
     if not sources:
         print("출처가 비었다 — 출처 없는 글은 만들지 않는다", file=sys.stderr)
+        if LOCAL_SRC in a.source:
+            # /변경 이 repo 밖 출처로 쓴 글을 되읽은 경우. 러너엔 그 파일이 없다 — 조용히
+            # 출처 없이 재생성하면 안 된다(그 글의 사실 근거가 통째로 빠진다)
+            print(f"  출처가 {LOCAL_SRC} 다 — repo 밖 파일로 쓴 글이라 재생성은 그 파일이 있는 "
+                  "로컬에서 `--source <경로>` 로 해야 한다", file=sys.stderr)
+        return 2
+    # 이 저장소는 공개다. `--publish` 는 곧바로 PR 을 열고 **검수는 그 뒤**라, repo 밖 파일(vault 노트 등)을
+    # 재료로 쓴 원고는 사람이 읽기 전에 전문이 공개된다. 다이제스트 발 원고는 출처가 공개 URL 이라
+    # 문제가 없었지만 vault 발은 다르다 — `me/` 활동 노트가 재료면 모델이 그걸 옮길 수 있다.
+    # 그래서 두 걸음을 강제한다: 여기서 멈추고(파일만 쓴다) → 사람이 전문을 읽고 → 그 뒤에 PR.
+    if a.publish and any(cite(s) == LOCAL_SRC for s in a.source):
+        print(f"repo 밖 출처로 쓴 원고는 `--publish` 로 바로 PR 을 열지 않는다 — 저장소가 공개라 "
+              f"검수 전에 전문이 나간다.\n  `--publish` 없이 돌려 파일만 만든 뒤 전문을 읽고, "
+              f"괜찮으면 그때 PR 을 연다.", file=sys.stderr)
         return 2
     if len(sources) != len(a.source):
         # 못 읽은 출처를 버리고 진행하면, 읽지도 않은 출처가 frontmatter 의
@@ -457,7 +497,7 @@ def main(argv: list[str]) -> int:
     # 어떤 주제·출처로 썼는지 frontmatter 에 남긴다 — LLM 이 본문에 URL 을 빠뜨려도 written_urls() 가 찾고,
     # /변경 재생성이 같은 주제·출처를 다시 쓴다(review_cmd.topic_sources)
     mdx = mdx.replace("---\n", f"---\ntopic: {json.dumps(a.topic, ensure_ascii=False)}\n"
-                                f"sources: {json.dumps(a.source, ensure_ascii=False)}\n", 1)
+                                f"sources: {json.dumps([cite(s) for s in a.source], ensure_ascii=False)}\n", 1)
     for w in why:
         print(f"  - {w[:300]}")
     if a.onto:
@@ -546,6 +586,32 @@ def selftest() -> int:
     load_source = lambda u: (u, "")   # noqa: E731
     assert first_readable(c) is None
     load_source = real_load
+
+    # cite(): 공개 MDX 에 repo 밖 경로·파일 이름이 실리면 안 된다 (트랙 B Q1, 2026-09-22).
+    # 되돌릴 수 없는 종류의 실수라 규약이 아니라 여기서 막는다 — 공개 커밋은 SHA 로 계속 읽힌다
+    assert cite("https://ex.com/a") == "https://ex.com/a"
+    assert cite(str(ROOT / "docs" / "voice.md")) == "docs/voice.md"      # repo 안이면 상대경로
+    assert cite("docs/voice.md") == "docs/voice.md"                      # 이미 상대경로여도 같은 답
+    for outside in ("/Users/someone/brain/wiki/평가-하네스.md", "../secret.md", str(Path.home() / "brain" / "me" / "PR_sns.md")):
+        assert cite(outside) == LOCAL_SRC, outside
+        assert "brain" not in cite(outside) and "secret" not in cite(outside)
+    # 못 읽는 로컬 파일은 예외가 아니라 빈 본문 — main 의 "못 읽었다" 경로로 떨어져야 한다
+    _SRC_CACHE.clear()
+    assert load_source("/nonexistent/no-such-note.md")[1] == ""
+    _SRC_CACHE.clear()
+
+    # frontmatter 만 가리면 절반이다 — 프롬프트 라벨로도 새면 모델이 본문에 인용하고, **본문은 렌더된다**
+    leak = "/Users/someone/brain/wiki/평가-하네스.md"
+    p = build_prompt("주제", [(leak, "출처 본문")])
+    assert leak not in p and "brain" not in p and LOCAL_SRC in p, "출처 경로가 프롬프트로 샌다"
+
+    # repo 밖 출처 + --publish 는 거부한다 — 저장소가 공개라 PR 이 열리는 순간 검수 전에 전문이 나간다
+    outside = Path(tempfile.mkdtemp()) / "vault-note.md"
+    outside.write_text("노트 본문\n" * 50, encoding="utf-8")
+    _SRC_CACHE.clear()
+    assert main(["", "--topic", "t", "--source", str(outside), "--publish"]) == 2, "repo 밖 출처인데 --publish 가 통과했다"
+    _SRC_CACHE.clear()
+
     print("selftest ok")
     return 0
 
