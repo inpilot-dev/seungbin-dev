@@ -17,6 +17,8 @@ yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 .env*
+# 예외: 값이 아니라 **키 이름 목록**이다. 환경변수 카탈로그라 추적해야 의미가 있다.
+!.env.example
 .vercel
 *.tsbuildinfo
 next-env.d.ts
@@ -35,6 +37,8 @@ docs/*
 # ADR 은 코드 독자를 위한 결정 기록 — 추적한다 (2026-09-18)
 !docs/adr/
 !docs/adr/**
+# 기능을 켜는 설정 가이드 — 코드 독자가 읽어야 한다 (2026-09-21)
+!docs/SETUP-features.md
 DESIGN-mintlify.md
 
 # 별도 콘텐츠 작업물 (공개 repo 제외)
