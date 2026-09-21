@@ -61,7 +61,31 @@
 - **미설정 시: CTA가 통째로 숨고 빌드 로그에 경고가 찍힌다.** 사이트는 정상 동작하지만 인바운드 지표는 0에 고정된다.
 - ⚠️ **받을 편지함이 있는 주소여야 한다.** `inpilot.dev`에는 MX 레코드가 없어 `hello@inpilot.dev`로는 답장을 못 받는다(2026-09-21 `dig` 확인). `send.inpilot.dev`의 MX는 SES 반송용이지 사람 편지함이 아니다.
 
-> 📌 `.env.example`은 `.gitignore`의 `.env*`에 걸려 **추적되지 않는다** — 로컬에만 있다. 그래서 env 카탈로그는 이 파일이 정본이다.
+## 6. Threads 토큰 재발급 🧵 — **60일마다 반복**
+
+`THREADS_TOKEN`은 60일에 만료된다. `refresh-threads-token.yml`(월 19:00 UTC = 화 04:00 KST)이 자동 갱신하지만, 갱신이 끊긴 채 만료되면 손으로 다시 받아야 한다. 직전 발급 2026-09-21 → **만료 ~11/20**.
+
+developers.facebook.com → 내 앱 → Threads API → 왼쪽 **사용 사례** → **설정(Customize)**
+
+1. **권한 6개** 전부 확인: `threads_basic` · `threads_content_publish` · `threads_manage_replies` · `threads_read_replies` · `threads_manage_insights` · `threads_keyword_search`
+2. **앱 역할(App roles)** → Threads 테스터에 본인 계정이 있고 **수락**돼 있는지 (리뷰 전엔 테스터만 권한을 받는다)
+3. 같은 화면 아래 **User Token Generator** → Generate → 단기 토큰 복사
+4. 장기 토큰으로 교환:
+   ```bash
+   curl -s "https://graph.threads.net/access_token?grant_type=th_exchange_token&client_secret=$SECRET&access_token=$SHORT"
+   # → {"access_token":"...","expires_in":5183944}  (60일)
+   ```
+5. 등록: `gh secret set THREADS_TOKEN -R <owner>/<repo>`
+6. **권한이 실제로 들어갔는지 확인** — 토큰 문자열이 있다고 권한이 있는 게 아니다(2026-09-14 실측: 토큰은 있는데 `API access blocked`):
+   ```bash
+   gh workflow run probe.yml          # 읽기 전용. 권한별로 200/오류를 한 화면에 찍는다
+   ```
+
+> ⚠️ 갱신 직후 24시간 안에는 `refresh-threads-token.yml`이 빨간불일 수 있다 — Meta가 "발급 후 24h" 조건을 건다. 결함이 아니다. 하루 지나 손으로 dispatch 하면 `GH_PAT` 되쓰기까지 확인된다.
+
+---
+
+> 📌 `.env.example`은 env 카탈로그다(키 이름만, 값 없음). 2026-09-21부터 이 파일과 함께 추적된다.
 
 ---
 

@@ -39,6 +39,8 @@ docs/*
 !docs/adr/**
 # 기능을 켜는 설정 가이드 — 코드 독자가 읽어야 한다 (2026-09-21)
 !docs/SETUP-features.md
+# 실측·한계 기록 — cron 이 돌 때마다 한 줄씩 붙는다. voice.md·adr/ 과 같은 이유로 추적 (2026-09-21)
+!docs/limits.md
 DESIGN-mintlify.md
 
 # 별도 콘텐츠 작업물 (공개 repo 제외)
