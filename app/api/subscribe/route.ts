@@ -24,9 +24,18 @@ export async function POST(req: NextRequest) {
   let alreadySubscribed = false;
 
   try {
-    // 기존 구독자면 환영 메일 재발송 금지 — 타인 이메일 반복 제출로 인한 메일 폭탄 차단
+    // 기존 구독자면 환영 메일 재발송 금지 — 타인 이메일 반복 제출로 인한 메일 폭탄 차단.
+    //
+    // 2026-09-21 실측(지도 #55): 옛 경로 `/audiences/{id}/contacts/{email}` 는 실제 구독자
+    // 주소에도 **404** 를 준다(Audiences → Segments 이관, 같은 ID 로 옛 목록 1건 vs 새 목록 7건).
+    // 404 면 여기서 "신규" 가 되어 아래 환영 메일이 다시 나갔다 — 위 주석이 막겠다던 바로 그 폭탄이
+    // 구독자 7명 중 6명에게 열려 있었다.
+    //
+    // 대체 경로는 후보 셋을 실호출해 골랐다. `?segment_id=&email=` 는 email 필터를 무시하고
+    // 전건(7건)을 주므로 못 쓴다. 아래 경로만 **기존 200 · 없는 주소 404** 를 둘 다 만족한다 —
+    // "있으면 200" 만 보고 바꿨다면 신규 구독자가 죄다 "이미 구독중" 이 되어 구독이 통째로 막혔다.
     const dup = await fetch(
-      `https://api.resend.com/audiences/${audience}/contacts/${encodeURIComponent(email)}`,
+      `https://api.resend.com/contacts/${encodeURIComponent(email)}?segment_id=${audience}`,
       { headers, signal: AbortSignal.timeout(5000) },
     );
     alreadySubscribed = dup.ok;
