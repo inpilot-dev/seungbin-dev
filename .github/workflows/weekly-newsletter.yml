@@ -1,0 +1,81 @@
+name: weekly-newsletter
+
+# 그 주에 나간 글을 뉴스레터 한 통으로 조립해 검수 PR 로 올린다 (증분 4, 지도 #52, 2026-09-22).
+#
+# 일 02:00 UTC = 11:00 KST — 같은 날 20:00 KST 슬롯 메시지에 이 PR 이 실리게 하려는 것이다.
+# GitHub 스케줄은 이 레포에서 상시 2~3시간 늦게 뜬다(실측: daily-digest 는 18:00 UTC 지정에
+# 20:12~21:03 UTC 실행). 9시간 여유를 두면 늦어도 슬롯 전에 들어온다.
+#
+# 주차는 **다음 금요일**의 ISO 주차다 — 일요일에 승인해도 그 주 금요일은 이미 지났다.
+# merge 하면 publish-queue 가 그 금요일 09:00 KST 에 낸다(drafts/newsletter/<주차>.md·.html).
+#
+# LLM 을 부르지 않는다 — 조립기다(scripts/write_newsletter.py 의 첫 줄 참조). Secret 도 필요 없다.
+on:
+  schedule:
+    - cron: "0 2 * * 0"
+  workflow_dispatch:
+    inputs:
+      now:
+        description: "기준 시각 — ISO 또는 YYYY-MM-DD (기본 지금 KST). 여기서 거꾸로 14일 안에 승인된 글 중 아직 안 실린 것"
+        type: string
+      dry_run:
+        description: "파일만 만들고 PR 은 안 연다"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: weekly-newsletter
+  cancel-in-progress: false
+
+jobs:
+  write:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # 재실행은 같은 주차를 또 만들려 든다. 스크립트가 파일 있음을 보고 멈추지만(브랜치·PR 충돌 방지),
+      # 낡은 체크아웃으로 도는 것 자체가 헷갈린다 — 다시 만들 거면 그 주차 파일을 지우고 새로 돌려라
+      - name: 재실행 거부
+        if: github.run_attempt != 1
+        run: |
+          echo "::error title=재실행 금지::다시 만들 거면 drafts/newsletter/<주차>.* 를 지우고 'Run workflow' 로 새로 돌려라"
+          exit 1
+      - uses: actions/checkout@v7
+        with:
+          ref: main
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Self-check
+        run: python scripts/write_newsletter.py --selftest
+      - name: 원고
+        id: nl
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NOW: ${{ inputs.now }}
+          DRY: ${{ inputs.dry_run && '1' || '' }}
+        run: |
+          set -euo pipefail
+          # 배열로 넘긴다 — 빈 값을 따옴표째 넘기면 빈 인자가 하나 들어가 argparse 가 죽는다
+          ARGS=()
+          if [ -n "${NOW:-}" ]; then ARGS+=(--now "$NOW"); fi
+          if [ -n "${DRY:-}" ]; then ARGS+=(--dry-run); fi
+          set +e; python scripts/write_newsletter.py "${ARGS[@]}" 2>&1 | tee out.txt; RC=${PIPESTATUS[0]}; set -e
+          # 알릴 게 있을 때만 — "새 글 0편" 인 주까지 울리면 알림이 소음이 된다
+          if grep -q '^PR: ' out.txt; then
+            { echo "msg<<EOF"; grep -E '^(PR: |[0-9]{4}-W)' out.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
+          fi
+          exit "$RC"
+      - name: Telegram
+        if: ${{ !cancelled() && (steps.nl.outputs.msg != '' || failure()) }}
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: |
+            ${{ steps.nl.outcome == 'failure' && '❌ 뉴스레터 원고 실패' || '✉️ 뉴스레터 원고 PR' }}
+            ${{ steps.nl.outputs.msg }}
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
