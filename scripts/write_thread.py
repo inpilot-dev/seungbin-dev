@@ -107,6 +107,7 @@ def build_prompt(title: str, source: str, url: str | None, feedback: str = "") -
 
 ## 출력 형식 — 이것만 출력
 글 1개. 각 글은 {MAX_LEN}자 이내. 500자를 넘길 만큼 할 말이 있으면 `{SEP.strip()}` 한 줄로 나눠 최대 {MAX_PARTS}개 체인.
+출력 첫 글자가 곧 첫 글의 첫 글자다 — 머리말·자평("324자, 여유 있음")·`Post 1/3` 같은 번호 마커를 붙이지 마라. 그대로 발행된다.
 {f'마지막 글 끝에 링크: {url}' if url else '링크 없음'}
 
 ## 절대 규칙
@@ -128,9 +129,14 @@ def build_prompt(title: str, source: str, url: str | None, feedback: str = "") -
 
 
 def split_parts(out: str) -> list[str]:
+    # 쪼개기만 한다 — 2026-09-22까지는 여기서 `[:MAX_PARTS]` 로 잘랐다. 그게 #80 을 만들었다:
+    # 생성기가 체인 앞에 머리말("324자, 여유 있음…")을 붙이면 그게 1번 글이 되고, 넘친 4번째
+    # (= 진짜 마지막 글)가 **말없이 버려진다.** 초과는 생성기가 형식을 어긴 것이니 조용히
+    # 따라 줄 게 아니라 generate() 가 재시도 피드백으로 돌려준다.
+    # 발행 경로(--draft · publish_queue)는 이미 게이트를 통과한 파일을 읽으므로 상한이 필요 없다.
+    # 거기서 자르는 건 사람이 손으로 쓴 글을 말없이 빠뜨리는 것뿐이었다.
     out = re.sub(r"^```\w*\n|\n```$", "", out.strip())
-    parts = [p.strip() for p in out.split(SEP.strip()) if p.strip()]
-    return parts[:MAX_PARTS]
+    return [p.strip() for p in out.split(SEP.strip()) if p.strip()]
 
 
 def generate(title: str, source: str, url: str | None, use_llm_grade: bool = True) -> tuple[list[str], bool, list[str]]:
@@ -140,7 +146,10 @@ def generate(title: str, source: str, url: str | None, use_llm_grade: bool = Tru
         if not out:
             return [], False, ["LLM 응답 없음"]
         parts = split_parts(out)
-        fails = []
+        # 초과 = 형식 위반. 자르지 않고 피드백으로 돌려준다 — 머리말이 슬롯을 먹은 경우도
+        # 여기로 걸려서 "머리말을 떼라" 가 아니라 "개수가 틀렸다" 로 모델에게 전달된다.
+        fails = [f"체인이 {len(parts)}개 — 최대 {MAX_PARTS}개다. 설명·머리말을 붙였으면 그것부터 떼라"] \
+            if len(parts) > MAX_PARTS else []
         for i, p in enumerate(parts):
             ok_i, why_i = grade.grade("thread", p, [source, url or ""], use_llm=use_llm_grade)
             if not ok_i:
@@ -261,7 +270,15 @@ def selftest() -> int:
           "- [x] **둘째**\n      `HN (300pts)` · https://ex.com/2\n")
     assert load_digest_item(md, 1) == ("첫 항목", "https://ex.com/1\n원문 텍스트")
     assert load_digest_item(md, 2) == ("둘째", "https://ex.com/2\n")
-    assert split_parts("```\n하나\n---\n둘\n---\n셋\n---\n넷\n```") == ["하나", "둘", "셋"]
+    # 자르지 않는다. 2026-09-22까지는 `["하나","둘","셋"]` 을 기대했고, 그 절삭이 #80 에서
+    # 진짜 마지막 글을 말없이 버렸다. 초과는 아래 generate() 가 재시도 사유로 돌려준다.
+    assert split_parts("```\n하나\n---\n둘\n---\n셋\n---\n넷\n```") == ["하나", "둘", "셋", "넷"]
+    real_ask = llm.ask
+    llm.ask = lambda *a, **k: "머리말이다\n---\n하나\n---\n둘\n---\n셋"   # noqa: E731  머리말이 슬롯을 먹은 #80 의 모양
+    parts, ok, why = generate("제목", "원문", None, use_llm_grade=False)
+    assert not ok and "체인이 4개" in why[0], why
+    assert len(parts) == 4, parts          # 넘친 글이 버려지지 않았다
+    llm.ask = real_ask
     # 토큰 없으면 DRY 로 떨어지고 체인 순서가 유지된다
     os.environ.pop("THREADS_TOKEN", None)
     assert publish_chain(["a", "b"], dry=False) == ["dry-run", "dry-run"]
