@@ -144,6 +144,12 @@ def deterministic(kind: str, md: str, sources: list[str]) -> list[str]:
     else:  # thread
         if len(md) > THREAD_MAX:
             fails.append(f"{len(md)}자 > Threads 상한 {THREAD_MAX}")
+        # 체인 위치 마커. #80(2026-09-22)이 `**Post 1/3**` 을 달고 채점 3회를 전부 지났다 —
+        # 스레드는 볼드(규칙 5)를 심사하지 않고 LLM 은 마커가 아니라 내용을 본다. 발행 경로
+        # (--draft · publish_queue)엔 LLM 검사가 아예 없어서, 여길 지나면 Threads 에 문자로 실린다.
+        # 한 줄이 통째로 마커일 때만 잡는다 — 문장 안의 "3/4 지점" 같은 건 건드리지 않는다.
+        if re.search(r"^[\s*\[(]*(?:Post|Part|글|파트)?\s*\d+\s*/\s*\d+[\s*\])]*$", prose, re.M):
+            fails.append("체인 위치 마커(`Post 1/3` 같은 줄) — 형식에 없다, 그대로 발행된다")
 
     if sources:
         # 원문에서는 URL 만 뺀다. URL 안 2자리 숫자는 건초더미라 지어낸 수치를 통과시키지만,
@@ -345,6 +351,12 @@ tags: ["원장"]
     # Threads 상한
     assert any("상한" in f for f in deterministic("thread", "가" * 501, []))
     assert deterministic("thread", "짧은 논평이다.", []) == []
+    # 체인 위치 마커 — #80 이 이 검사가 없어서 채점 3회를 그대로 지났다 (2026-09-22)
+    for marker in ("**Post 1/3**\n\n본문이다.", "Post 2/3\n본문이다.", "본문이다.\n\n(3/3)", "[1/2]\n본문이다."):
+        assert any("마커" in f for f in deterministic("thread", marker, [])), marker
+    # 한 줄 전체가 마커일 때만 — 문장 안의 분수·비율은 정상 글이다
+    for ok_text in ("3/4 지점에서 끊긴다.", "승률 2/3 이 한계였다.", "나는 effort 레벨로 갔다."):
+        assert not any("마커" in f for f in deterministic("thread", ok_text, [])), ok_text
 
     # 빈칸이 남은 초안은 발행 불가
     assert any("빈칸" in f for f in deterministic("thread", "[내가 채울 것: 수치]", []))
