@@ -1,0 +1,78 @@
+name: inbound
+
+# 인바운드 1건을 **댓글 한 줄로** 적는다 (2026-09-22).
+#   아무 이슈·PR 댓글:  /인바운드 메일 · 압축 요약 글 · 진단 콜 문의
+#   → scripts/dashboard.py --inbound 가 state/inbound.jsonl 에 append → main 에 커밋 → 댓글로 누적 회신
+#
+# 왜: 이 파일이 **12/06 판정 다섯째 지표(인바운드 4건)의 유일한 근거**인데(CONTEXT.md 「인바운드」),
+#     여태 적는 길이 "로컬 체크아웃 → 스크립트 실행 → git add·commit·push" 뿐이었다
+#     (dashboard.py:127-129 "적는 것도 커밋도 사람이 한다"). 노트북이 있어야만 적을 수 있고,
+#     안 적으면 지표가 0 으로 죽는다 — 판정이 자동 실패한다. 댓글이면 폰에서 10초다.
+#
+# 자동 집계가 아니다. 세는 건 여전히 사람이고(Threads API 는 "어느 게시물을 지목했는지" 를 안 준다,
+# dashboard.py:15-16) 이 워크플로는 **받아 적는 자리**만 폰으로 옮긴다.
+#
+# ⚠️ 이 저장소는 공개다. 적은 문장이 그대로 공개 파일에 들어간다 —
+#    보낸 사람 이름·메일 주소를 쓰지 말고 채널과 글 제목만 쓴다.
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: write        # state/inbound.jsonl
+  issues: write          # 회신 댓글
+
+jobs:
+  record:
+    # OWNER 만. 공개 레포라 누구든 판정 지표를 부풀릴 수 있으면 안 된다 (review.yml 과 같은 가드)
+    if: >-
+      github.event.comment.author_association == 'OWNER'
+      && startsWith(github.event.comment.body, '/인바운드')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: 적기
+        id: add
+        env:
+          # 댓글 본문을 run: 에 직접 끼우면 스크립트 주입이다 — 반드시 env 로 건넨다
+          BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          python scripts/dashboard.py --selftest >/dev/null
+          NOTE=$(printf '%s' "$BODY" | head -1 | sed 's|^/인바운드[[:space:]]*||')
+          [ -n "$NOTE" ] || { echo "::error title=내용 없음::/인바운드 <채널> · <글> · <한 줄> 형식으로 적어라"; exit 1; }
+          OUT=$(python scripts/dashboard.py --inbound "$NOTE")
+          echo "$OUT"
+          { echo "out<<EOF"; echo "$OUT"; echo "EOF"; } >> "$GITHUB_OUTPUT"
+      - name: 커밋
+        run: |
+          set -euo pipefail
+          [ -f state/inbound.jsonl ] || { echo "::error::파일이 안 생겼다"; exit 1; }
+          # 최신 main 위에 이 파일만 얹는다 — slot-notify 의 계기판 커밋과 같은 방식.
+          # 댓글은 아무 브랜치의 PR 에서나 올 수 있어 HEAD 를 그대로 밀면 안 된다.
+          cp state/inbound.jsonl "$RUNNER_TEMP/inbound.jsonl"
+          git fetch -q origin main && git checkout -q -B inbound-commit origin/main
+          mkdir -p state && cp "$RUNNER_TEMP/inbound.jsonl" state/inbound.jsonl
+          git add state/inbound.jsonl
+          git diff --cached --quiet && { echo "변경 없음"; exit 0; }
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -q -m "state: 인바운드 $(TZ=Asia/Seoul date +%F)"
+          git push -q origin inbound-commit:main
+      - name: 회신
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          URL: ${{ github.event.issue.html_url }}
+          OUT: ${{ steps.add.outputs.out }}
+        run: |
+          set -euo pipefail
+          if [ "${{ job.status }}" = "success" ] && [ -n "$OUT" ]; then
+            gh issue comment "$URL" --body "📥 ${OUT}"
+          else
+            gh issue comment "$URL" --body "❌ 인바운드 기록 실패 — 실행 로그를 보라. 형식: \`/인바운드 <채널> · <글> · <한 줄>\`"
+          fi
