@@ -50,5 +50,7 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            ⏳ 결정 없는 원고
+            [결정 없는 원고]
+            보류 = 다음 일요일 슬롯까지 결정이 없으면 자동 반려 · 만료 = 방금 자동 반려됨
+
             ${{ steps.sweep.outputs.msg }}

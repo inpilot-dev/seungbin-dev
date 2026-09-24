@@ -212,7 +212,7 @@ def _delta(cur, prev) -> str:
 def render(d: dict, prev: dict | None = None) -> str:
     prev = prev or {}
     fail = "조회 실패"
-    lines = [f"📊 계기판 ({d['frm']:%m/%d}~{d['to']:%m/%d})"]
+    lines = [f"[계기판] ({d['frm']:%m/%d}~{d['to']:%m/%d})"]
     lines.append(f"결정 {fail}" if d["decisions"] is None else
                  f"결정 {d['decisions']}건 (수시 {d['adhoc']}건) · 자동 반려 {d['auto_rejected']}건")
     lines.append(f"발행 실패 {fail}" if d["publish_failures"] is None else f"발행 실패 {d['publish_failures']}건")
@@ -377,7 +377,7 @@ def selftest() -> int:
             code, out, _ = run([])
             assert code == 0 and net == [], net
             lines = out.splitlines()
-            assert lines[0] == "📊 계기판 (09/13~09/20)", lines
+            assert lines[0] == "[계기판] (09/13~09/20)", lines
             assert "결정 3건 (수시 2건) · 자동 반려 1건" in out, out
             assert "발행 실패 1건" in out, out
             assert "게시 4건 (blog 2 · threads 1 · cards 0 · newsletter 1)" in out, out

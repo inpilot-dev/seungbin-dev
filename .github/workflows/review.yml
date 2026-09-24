@@ -243,7 +243,7 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            ${{ job.status == 'success' && '🔁 카드뉴스 재생성 요청 — 10~30분 뒤 새 PR' || '❌ 카드뉴스 재생성 실패' }}
+            ${{ job.status == 'success' && '[카드뉴스 다시 만들기] 요청함. 10~30분 뒤 새 PR 로 온다' || '[카드뉴스 다시 만들기 실패] 아래 PR 의 실행 기록을 보라' }}
             ${{ github.event.issue.html_url }}
 
   command:
@@ -309,5 +309,5 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            ${{ steps.regen.outputs.rc == '0' && '✅ 재생성 통과' || steps.regen.outputs.rc == '1' && '⚠️ 재생성 탈락' || '❌ 재생성 거부/실패' }} — PR #${{ github.event.issue.number }}
+            ${{ steps.regen.outputs.rc == '0' && '[다시 쓰기 끝] 채점 통과. PR 을 열어 읽고 Merge 또는 Close' || steps.regen.outputs.rc == '1' && '[다시 쓰기 끝] 채점 탈락. 댓글 /변경 으로 한 번 더 지시하거나 /주제 N 으로 바꾸기' || '[다시 쓰기 실패] PR 에 남은 댓글에 이유가 있다' }}
             ${{ github.event.issue.html_url }}
