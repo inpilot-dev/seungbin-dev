@@ -42,9 +42,9 @@ jobs:
           for f in slot_notify dashboard comment_assist; do python "scripts/$f.py" --selftest >/dev/null; done
           gh pr list --state open --limit 100 --json number,title,url,labels | python scripts/slot_notify.py > msg.txt
           # 계기판·댓글은 부가 정보 — 죽어도 원고 목록은 나간다
-          { echo; python scripts/dashboard.py --append || echo "📊 계기판 실패 — 실행 로그를 보라"; } >> msg.txt
+          { echo; python scripts/dashboard.py --append || echo "[계기판 실패] 실행 기록을 보라"; } >> msg.txt
           # stdout 은 건수 한 줄뿐(본문은 스크립트가 Telegram 으로 직접)
-          { echo; python scripts/comment_assist.py --telegram || echo "💬 댓글 보조 실패"; } >> msg.txt
+          { echo; python scripts/comment_assist.py --telegram || echo "[댓글 보조 실패] 실행 기록을 보라"; } >> msg.txt
           cat msg.txt
           { echo "text<<EOF"; cat msg.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
       - name: 계기판 기록 커밋

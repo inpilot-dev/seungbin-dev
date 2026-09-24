@@ -178,5 +178,7 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            ❌ auto-post 실패 — 블로그 ${{ steps.post.outputs.pr != '' && '열림' || steps.mode.outputs.blog == 'true' && '안 열림' || '해당 없음' }} · 논평 ${{ steps.thread.outputs.pr != '' && '열림' || steps.mode.outputs.thread == 'true' && '안 열림' || '해당 없음' }} (한도·토큰·다이제스트 확인)
+            [원고 만들기 실패] 이번 회차 원고가 일부 안 만들어졌다
+            블로그 ${{ steps.post.outputs.pr != '' && '열림' || steps.mode.outputs.blog == 'true' && '안 열림' || '해당 없음' }} · 논평 ${{ steps.thread.outputs.pr != '' && '열림' || steps.mode.outputs.thread == 'true' && '안 열림' || '해당 없음' }}
+            원인은 보통 한도·토큰·다이제스트다. 실행 기록:
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

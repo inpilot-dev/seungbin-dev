@@ -118,13 +118,13 @@ def draft_for(t: dict) -> str:
             d = again.strip()
             fails = check(d)
         if fails:
-            d = f"⚠️ 검사 탈락: {'; '.join(fails)}\n{d}"
+            d = f"[검사 탈락] {'; '.join(fails)}\n{d}"
     return d
 
 
 def body(targets: list[dict]) -> str:
     """Telegram 평문 — 마크다운 파싱을 안 켜므로 이스케이프가 필요 없다."""
-    parts = [f"💬 {LABEL} {date.today()} — {len(targets)}건"]
+    parts = [f"[{LABEL}] {date.today()} — {len(targets)}건"]
     for i, t in enumerate(targets, 1):
         summary = " ".join((t["post"].get("text") or "").split())[:40]
         quoted = "\n".join("│ " + ln for ln in (t.get("text") or "").splitlines() or [""])
@@ -266,7 +266,7 @@ def selftest() -> int:
         assert "<답글>\n질문 5" in llm_calls[0] and "말투 규칙" in llm_calls[0]
         # 재시도도 탈락 → 초안은 남기고 표시
         llm_script[:] = ["#태그 달았다", "여전히 #태그 달았다"]
-        assert draft_for(t[0]).startswith("⚠️ 검사 탈락: 해시태그 금지\n여전히")
+        assert draft_for(t[0]).startswith("[검사 탈락] 해시태그 금지\n여전히")
         # LLM 둘 다 없음
         llm_script[:] = [None]
         assert draft_for(t[0]) == "(초안 생성 실패 — 직접 작성)"

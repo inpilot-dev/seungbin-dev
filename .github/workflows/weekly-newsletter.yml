@@ -76,6 +76,6 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            ${{ steps.nl.outcome == 'failure' && '❌ 뉴스레터 원고 실패' || '✉️ 뉴스레터 원고 PR' }}
+            ${{ steps.nl.outcome == 'failure' && '[뉴스레터 원고 실패] 실행 기록을 보라' || '[뉴스레터 원고] 결정 필요 — Merge = 금 09:00 발송 · Close = 이번 주 안 보냄' }}
             ${{ steps.nl.outputs.msg }}
             ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}

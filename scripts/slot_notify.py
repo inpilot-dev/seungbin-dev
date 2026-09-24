@@ -24,6 +24,7 @@ import publish_queue as pq  # noqa: E402
 import send_newsletter as sn  # noqa: E402
 
 DAYS = "월화수목금토일"
+KIND = {"원고:blog": "블로그", "원고:thread": "Threads", "원고:card": "카드뉴스", "원고:newsletter": "뉴스레터"}
 
 
 def message(prs: list[dict], today: date) -> str:
@@ -36,10 +37,12 @@ def message(prs: list[dict], today: date) -> str:
         flags = "".join(f" [{f}]" for f in ("탈락", "보류") if f in names)
         groups.setdefault(kind, []).append(f"· #{p['number']} {p['title']}{flags}\n  {p['url']}")
     total = sum(len(v) for v in groups.values())
-    out = [f"🗳 슬롯 {today:%m/%d} — 결정할 원고 {total}건",
-           "merge=승인 · close=반려 · 블로그 /변경 · /주제 N · 카드 /다시", ""]
+    out = [f"[슬롯 {today:%m/%d}] 결정할 원고 {total}건", "",
+           "Merge = 승인 · Close = 반려",
+           "블로그 PR 댓글: /주제 N (N번으로 다시) · /변경 <한 줄> (고쳐 쓰기)",
+           "카드뉴스 PR 댓글: /다시 (한 벌 새로)", ""]
     for kind in sorted(groups):
-        out += [f"{kind} {len(groups[kind])}건", *groups[kind], ""]
+        out += [f"{KIND.get(kind, kind)} {len(groups[kind])}건", *groups[kind], ""]
     if not total:
         out += ["열린 원고 없음 — 이번 주는 아무것도 안 나간다(의도된 동작).", ""]
     sched = upcoming(today)
@@ -128,8 +131,8 @@ def selftest() -> int:
            {"number": 45, "title": "지도", "url": "https://g/45", "labels": [{"name": "wayfinder:map"}]}]
     m = message(prs, date(2026, 9, 27))
     assert "결정할 원고 4건" in m and "#42 post: x [탈락]" in m and "#45" not in m, m
-    assert "원고:card 1건" in m and "#44 cards: z [보류]" in m, m
-    assert "원고:newsletter 1건" in m and "#46 newsletter: 2026-W40" in m, m
+    assert "카드뉴스 1건" in m and "#44 cards: z [보류]" in m, m
+    assert "뉴스레터 1건" in m and "#46 newsletter: 2026-W40" in m, m
     assert "09/28(월) 09:00 Threads — c-a" in m and "c-old" not in m, m
     assert "10/02(금) 09:00 뉴스레터 — 2026-W40" in m, m          # W40 의 금요일
     assert "2026-W35" not in m and "2026-W41" not in m, m         # 지난 주차 · 이미 나간 주차
