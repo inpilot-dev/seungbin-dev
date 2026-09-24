@@ -72,6 +72,7 @@ jobs:
           V=$( [ -f "drafts/threads/$SLUG.FAIL.md" ] && echo FAIL || echo PASS )
           URL=$(scripts/open_thread_pr.sh "$SLUG" "블로그 $BLOG_PR 의 파생 ($ON 발행)")
           { echo "url=$URL"; echo "on=$ON"; echo "verdict=$V"; } >> "$GITHUB_OUTPUT"
+          { echo "note<<__NOTE__"; python scripts/pr_note.py "$URL" || echo "$URL"; echo "__NOTE__"; } >> "$GITHUB_OUTPUT"
 
       # 카드뉴스만 다른 레포가 만든다 — 렌더러·Playwright·사진 장부가 card-news 에 있다(레포를 합치지 않는다).
       # 덱이 나오면 그쪽이 GH_PAT 으로 이 레포에 `원고:card` PR 을 연다. 10~30분 걸린다.
@@ -105,10 +106,9 @@ jobs:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            🧵 Threads 원고 PR — 채점 ${{ steps.pr.outputs.verdict }} (블로그 승인 파생 · ${{ steps.pr.outputs.on }} 09:00 발행 예정)
-            merge=발행 대기 · close=반려
-            ${{ steps.pr.outputs.url }}
-            ${{ steps.card.outcome == 'failure' && '⚠️ 카드뉴스 덱 요청 실패 — 덱은 안 온다. card-news 의 render 를 손으로 돌려라' || '🖼 카드뉴스 덱 요청함 — 10~30분 뒤 별도 PR' }}
+            ${{ steps.pr.outputs.note }}
+
+            ${{ steps.card.outcome == 'failure' && '카드뉴스 덱 요청 실패 — 덱은 안 온다. card-news 의 render 를 손으로 돌려라' || '카드뉴스 덱: 요청함. 10~30분 뒤 별도 PR 로 온다' }}
 
   queued:
     name: Threads 승인 → 발행 대기
