@@ -1,0 +1,28 @@
+name: notify
+
+# 밖에서 Telegram 한 통을 보내는 통로 (2026-09-25). 클라우드 루틴(매일 고장 진단)이 GitHub API 로 이걸 부른다 —
+# 봇 열쇠를 루틴 환경에 또 두지 않고 이 저장소 Secret 한 곳에만 둔다.
+# workflow_dispatch 는 쓰기 권한자만 부를 수 있다(공개 저장소여도 남이 못 울린다).
+# 문장은 with: → env 로만 흘러 셸에 끼지 않는다(.github/actions/telegram).
+on:
+  workflow_dispatch:
+    inputs:
+      text:
+        description: "보낼 문장"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  send:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@v7
+      - uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          text: ${{ inputs.text }}
