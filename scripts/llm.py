@@ -15,7 +15,9 @@ import sys
 import time
 import urllib.request
 
-CLAUDE_MODEL = "claude-haiku-4-5"
+# 구독(CLAUDE_CODE_OAUTH_TOKEN)이라 토큰당 청구가 없다 — 싼 모델을 고를 이유가 없어 전부 이 한 모델로 (2026-09-24 사용자 결정).
+# 대가는 구독 사용량 한도가 더 빨리 찬다는 것뿐이고, 한도에 걸리면 아래 재시도 → 실패 알림으로 끝난다(대충 만든 글이 나가진 않는다).
+CLAUDE_MODEL = "claude-opus-5-5"
 OLLAMA_MODEL = "qwen2.5:7b-instruct"
 OLLAMA_URL = "http://localhost:11434/api/generate"
 # 2026-09-18 실측: 구독 사용량 한도에 걸리면 `claude -p` 가 exit 1 로 **즉시** 죽고 사유는 stdout 에 쓴다.

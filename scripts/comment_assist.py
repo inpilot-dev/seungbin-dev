@@ -9,7 +9,7 @@
   GET /me/threads        → 최근 7일 글 (limit 25)
   GET /{글}/replies      → 최상위 답글. 내 답글은 뺀다
   GET /{답글}/replies    → 내가 이미 답했으면 뺀다
-남은 것 중 최신 5건에 haiku 초안(llm.ask) → grade.deterministic("thread") 검사, 탈락이면 사유를 주고 1회 재시도.
+남은 것 중 최신 5건에 초안(llm.ask) → grade.deterministic("thread") 검사, 탈락이면 사유를 주고 1회 재시도.
 
 **전달은 Telegram 개인 채팅뿐이다** (리뷰 2026-09-19). 처음 설계(#54)는 GitHub Issue 였는데, 이 레포는 공개라
 남의 Threads 아이디·답글 본문을 공개로 옮겨 싣고 `@아이디` 가 같은 이름의 GitHub 계정을 멘션한다. Actions 로그도
