@@ -147,6 +147,8 @@ def humanize(parts: list[str], url: str | None) -> list[str]:
     skill = "\n\n".join(f.read_text(encoding="utf-8") for f in
                          (HUMANIZER / "SKILL.md", HUMANIZER / "references" / "ai-tell-taxonomy.md") if f.exists())
     if not skill:
+        # #93 은 이 파일이 .gitignore(docs/*) 에 걸려 커밋에서 빠진 채 머지됐다 — 조용히 넘어가면 아무도 모른다
+        print(f"::warning title=humanize 꺼짐::{HUMANIZER} 에 스킬 파일이 없다 — 생성 원고를 그대로 쓴다", file=sys.stderr)
         return parts
     voice = VOICE.read_text(encoding="utf-8") if VOICE.exists() else ""
     prompt = f"""아래 스킬 문서대로 Threads 글을 윤문하라. 스킬 문서 뒤의 「이 작업의 규칙」이 스킬 문서보다 우선한다.
@@ -331,6 +333,8 @@ def selftest() -> int:
     parts, ok, why = generate("제목", "원문", None, use_llm_grade=False)
     assert not ok and "체인이 4개" in why[0], why
     assert len(parts) == 4, parts          # 넘친 글이 버려지지 않았다
+    assert (HUMANIZER / "SKILL.md").exists() and (HUMANIZER / "references" / "ai-tell-taxonomy.md").exists(), \
+        "humanizer 스킬 사본이 없다 — .gitignore 예외(!docs/humanizer/) 확인"
     # humanize: 형식이 맞으면 쓰고, 깨지면 원본
     for reply, want in [("다듬은 하나\n---\n다듬은 둘 https://x", ["다듬은 하나", "다듬은 둘 https://x"]),
                         ("하나로 합쳤다 https://x", ["하나", "둘 https://x"]),           # 개수가 바뀌었다
