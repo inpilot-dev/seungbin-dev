@@ -41,6 +41,9 @@ docs/*
 !docs/SETUP-features.md
 # 실측·한계 기록 — cron 이 돌 때마다 한 줄씩 붙는다. voice.md·adr/ 과 같은 이유로 추적 (2026-09-21)
 !docs/limits.md
+# korean-humanizer 사본 — write_thread.humanize 가 러너에서 읽는다. 빠지면 윤문이 조용히 꺼진다(2026-09-24 #93)
+!docs/humanizer/
+!docs/humanizer/**
 DESIGN-mintlify.md
 
 # 별도 콘텐츠 작업물 (공개 repo 제외)
