@@ -4,6 +4,8 @@ name: notify
 # 봇 열쇠를 루틴 환경에 또 두지 않고 이 저장소 Secret 한 곳에만 둔다.
 # workflow_dispatch 는 쓰기 권한자만 부를 수 있다(공개 저장소여도 남이 못 울린다).
 # 문장은 with: → env 로만 흘러 셸에 끼지 않는다(.github/actions/telegram).
+# ⚠️ 보낸 문장은 이 공개 저장소의 실행 로그에 그대로 찍힌다(run 36042007748 로그 `text:`·`TG_TEXT:` 실측).
+#    누구나 읽는다 — 건수·링크 같은 공개해도 되는 것만 보내고, 내용은 비공개 저장소 이슈에 둔다.
 on:
   workflow_dispatch:
     inputs:
