@@ -6,7 +6,7 @@ name: review
 #   ② Threads 원고 PR merge  → 라벨 `발행 대기` + 예정 시각 댓글. 발행은 publish-queue.yml 이 그 날 09:00 에 (증분 2)
 #   ③ 카드뉴스 PR merge      → 라벨 `발행 대기` + 목 09:00 안내, 그리고 card-news 에 사진 장부를 적게 한다 (증분 5)
 #   ④ 원고 PR 댓글 /변경·/주제 → 재생성해 같은 PR 브랜치에 밀어 넣고 결과를 댓글로 남긴다
-# 저장소는 공개다 — 댓글 명령은 OWNER 만 받는다. 아니면 누구든 sonnet 생성을 돌릴 수 있다.
+# 저장소는 공개다 — 댓글 명령은 OWNER 만 받는다. 아니면 누구든 생성을 돌려 구독 한도를 태울 수 있다.
 on:
   pull_request:
     types: [closed]

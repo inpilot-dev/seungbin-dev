@@ -50,7 +50,7 @@ VOICE = ROOT / "docs" / "voice.md"
 # korean-humanizer 스킬(MIT) 사본 — 러너엔 ~/.claude/skills 가 없어서 repo 에 둔다. 원본을 고치면 여기도 복사할 것
 HUMANIZER = ROOT / "docs" / "humanizer"
 MAX_LEN, MAX_PARTS, MAX_TRIES = pt.MAX_LEN, 3, 3   # 2026-09-14: 2회로는 통과율이 1/3 이라 3회
-GEN_MODEL = "claude-sonnet-5"
+GEN_MODEL = llm.CLAUDE_MODEL
 SEP = "\n---\n"   # LLM 이 체인을 나누는 구분자
 
 

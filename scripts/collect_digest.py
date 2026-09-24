@@ -28,6 +28,9 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from llm import CLAUDE_MODEL  # noqa: E402  모델은 llm.py 한 곳에서 정한다
+
 KST = timezone(timedelta(hours=9))
 UA = "Mozilla/5.0 (compatible; inpilot-digest/1.0; +https://inpilot.dev)"
 DIGEST_DIR = Path(__file__).resolve().parent.parent / "digest"
@@ -339,7 +342,7 @@ def interleave(items: list[dict], limit: int) -> list[dict]:
 
 
 def summarize(items: list[dict]) -> list[str] | None:
-    """claude -p (Haiku) 1콜로 전체를 한 번에 요약. 실패하면 None — 수집은 계속된다.
+    """claude -p 1콜로 전체를 한 번에 요약. 실패하면 None — 수집은 계속된다.
 
     반환값은 items와 **같은 길이**의 리스트이거나 None. 길이가 다르면
     요약이 항목과 어긋난 것이므로 통째로 버린다 (엉뚱한 링크에 요약이
@@ -365,7 +368,7 @@ def summarize(items: list[dict]) -> list[str] | None:
 
         # 구독 인증: 로컬은 로그인된 CLI, CI는 CLAUDE_CODE_OAUTH_TOKEN env
         r = subprocess.run(
-            ["claude", "-p", "--model", "claude-haiku-4-5"],
+            ["claude", "-p", "--model", CLAUDE_MODEL],
             input=prompt, capture_output=True, text=True, timeout=300,
         )
         if r.returncode != 0:
