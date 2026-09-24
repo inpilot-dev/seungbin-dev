@@ -131,6 +131,7 @@ jobs:
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
           echo "verdict=${VERDICT:-?}" >> "$GITHUB_OUTPUT"
           [ -n "$PR" ] || { echo "::error title=PR 없음::원고 PR 이 열리지 않았다 — 위 로그를 보라"; exit 1; }
+          { echo "note<<__NOTE__"; python scripts/pr_note.py "$PR" || echo "$PR"; echo "__NOTE__"; } >> "$GITHUB_OUTPUT"
 
       # 논평 ①②: 블로그가 고른 출처(열린 PR)와 이전 논평의 출처를 뺀 후보 1번. 탈락이어도 PR 로 올린다
       - name: 논평 원고 PR
@@ -151,6 +152,7 @@ jobs:
           URL=$(scripts/open_thread_pr.sh "$SLUG" "다이제스트 논평 ($ON 발행)")
           echo "pr=$URL" >> "$GITHUB_OUTPUT"
           echo "verdict=$( [[ "$F" == *.FAIL.md ]] && echo FAIL || echo PASS )" >> "$GITHUB_OUTPUT"
+          { echo "note<<__NOTE__"; python scripts/pr_note.py "$URL" || echo "$URL"; echo "__NOTE__"; } >> "$GITHUB_OUTPUT"
 
       - name: Telegram (논평)
         if: ${{ !cancelled() && steps.thread.outputs.pr != '' }}
@@ -158,10 +160,7 @@ jobs:
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
-          text: |
-            🧵 논평 원고 PR — 채점 ${{ steps.thread.outputs.verdict }} · ${{ steps.mode.outputs.on }} 09:00 발행 예정
-            merge=발행 대기 · close=반려
-            ${{ steps.thread.outputs.pr }}
+          text: ${{ steps.thread.outputs.note }}
 
       - name: Telegram
         if: always() && steps.post.outputs.pr != ''
@@ -169,10 +168,7 @@ jobs:
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
-          text: |
-            📝 블로그 원고 PR — 채점 ${{ steps.post.outputs.verdict }}
-            merge=승인 · close=반려 · /변경 <지시> · /주제 N
-            ${{ steps.post.outputs.pr }}
+          text: ${{ steps.post.outputs.note }}
 
       # 원고 PR 이 안 열렸으면 그 주 그 칸이 비다 — 침묵이 아니라 폰에 한 줄이 와야 한다 (한도·토큰·다이제스트 없음)
       - name: Telegram (실패)
