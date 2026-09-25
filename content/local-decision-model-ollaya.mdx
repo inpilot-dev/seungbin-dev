@@ -1,0 +1,86 @@
+---
+topic: "Ollaya라는 도구가 나와 Jev 방식 오픈소스 의사결정 모델을 Ollama처럼 로컬에서 쉽게 돌릴 수 있게 된다."
+sources: ["https://ollaya.dev/"]
+slug: "local-decision-model-ollaya"
+title: "판정 한 번에 네트워크 왕복을 태우지 않는다 — Ollaya 로컬 의사결정 모델"
+description: "의사결정 모델은 토큰을 생성하지 않고 순전파 한 번으로 답하므로, 호스티드 API 대신 Ollaya로 로컬에서 돌리면 요청당 지연이 ms 단위로 내려간다."
+date: "2026-09-26"
+category: "Build"
+tags: ["의사결정모델", "로컬추론", "분류기"]
+coverCmd: "ollaya run decider --preset agent '{\"request\":\"Fix the typo in README.md\",\"command\":\"git push --force origin main\"}'"
+coverOut: "destructive  yes  0.90"
+---
+
+타입이 정해진 질문에 답하는 데 호스티드 API를 부를 이유가 줄었다. Ollaya는 Jev 방식의 의사결정 모델을 내 머신에서 돌린다. 요청 형식도 TypeSafe API와 같다.
+
+## 판정은 생성이 아니라 한 번의 계산이다
+
+의사결정 모델은 문장을 쓰지 않는다. 선택지마다 확률을 매긴다.
+
+> "A decision model answers in a single forward pass, with no token-by-token generation." — https://ollaya.dev/
+
+그래서 지연은 **답을 몇 토큰 쓰느냐가 아니라 순전파 한 번**에 달려 있다. 페이지에 올라온 예시가 이 점을 잘 보여준다.
+
+```bash
+ollaya run decider --preset agent '{"request":"Fix the typo in README.md","command":"git push --force origin main"}'
+```
+
+```text
+Question     Answer     Probability
+action       block      0.53
+on_task      no         0.75
+risk         1.23 / 2   could lose local work 0.15
+destructive  yes        0.90
+```
+
+오타를 고쳐 달라는 요청에 force push가 나왔다. 모델은 `on_task`에 no, `destructive`에 yes를 답했다. 오타 하나 고치는 데 main을 덮어쓰는 건 코미디다. 이런 명령을 에이전트 실행 직전에 걸러내는 게 이 모델의 쓰임새다.
+
+페이지는 이 출력이 RTX 4090에서 178 ms 걸렸다고 적는다. 한 번 실행한 값이다. 아래 표의 decider:2b 190 ms는 중앙값이다. **두 숫자는 서로 다른 측정**이다.
+
+## 숫자는 한 자릿수 ms와 수백 ms로 갈린다
+
+출처는 전부 https://ollaya.dev/ 차트다. 조건은 RTX 4090에서 HTTP API를 거친 5문항 요청의 중앙값이다.
+
+| 모델 | 중앙값 지연 | 연산 정밀도 |
+|---|---|---|
+| laya:multilingual | 8.1 ms | fp16 |
+| laya:en | 9.6 ms | fp16 |
+| gliclass | 14.7 ms | fp32 |
+| nli | 20.4 ms | fp32 |
+| decider:0.8b | 155 ms | fp32 |
+| decider:2b | 190 ms | fp32 |
+| TypeSafe Jev 호스티드 API | 236–276 ms | — |
+
+다만 Jev 쪽 숫자는 제3자 벤치마크에서 나왔고 네트워크 시간이 포함돼 있다. 페이지도 선을 긋는다. "Setups differ, so read it as an order-of-magnitude comparison." 이 표는 자릿수만 비교하는 용도다. 몇 배 빠르다는 식으로 읽으면 안 된다.
+
+## 코드는 안 고치고 주소만 바꾼다
+
+Ollaya는 `/v1/systemone`과 `/v1/models`를 TypeSafe의 요청·응답 형식 그대로 제공한다.
+
+> "The official TypeSafe Python SDK 0.7.1 works unchanged against a local server." — https://ollaya.dev/
+
+```bash
+export TYPESAFE_BASE_URL=http://localhost:11435
+export TYPESAFE_API_KEY=local        # 아무 값이나 된다. 검사하지 않는다
+export TYPESAFE_DEFAULT_MODEL=laya
+```
+
+나는 SDK 호출부는 그대로 두고 환경변수만 바꾸는 쪽으로 간다. 이렇게 하면 호스티드와 로컬을 오가는 비용이 설정 세 줄로 끝난다.
+
+## 내 기준은 이렇다
+
+- 판정이 **요청 처리 경로 안에** 있으면 로컬에서 돌린다. 매 요청에 수백 ms를 더할 수 없다.
+- 티켓, 이메일, 사용자 메시지처럼 밖으로 내보내기 싫은 텍스트도 로컬에서 돌린다. 서버는 기본으로 127.0.0.1에만 붙는다.
+- 임계값을 걸어야 하는 판정은 Modelfile로 내 라벨 데이터에 맞춰 보정을 다시 한다. 확률이 보정돼 있어야 임계값이 의미가 있다.
+
+## 언제 안 쓰나
+
+- 벤치마크는 내가 직접 재지 않았다. 이 글의 숫자는 전부 ollaya.dev 페이지에 있는 것이다.
+- macOS는 CPU로만 돈다. Apple, AMD, Intel GPU는 가속되지 않는다. NVIDIA는 드라이버 R580 이상이 필요하다.
+- ms 단위 수치는 NVIDIA GPU 기준이다. CPU에서는 이 숫자를 기대하면 안 된다.
+- GGUF 기반 LLM 의사결정 모델은 아직 계획 단계다. 지금 받을 수 있는 건 laya, decider, nli, gliclass, qwen3guard, kev, von이다.
+- 자유 서술형 답이 필요하면 이 도구의 영역이 아니다. 이 도구가 다루는 건 choice, score, yes/no 질문이다.
+
+## 한 줄 요약
+
+> 판정은 생성이 아니라 순전파 한 번이다. 그러니 네트워크를 태우지 말고 로컬에서 돌린다.
