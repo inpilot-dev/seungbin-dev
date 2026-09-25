@@ -1,0 +1,33 @@
+name: ci
+
+# PR 마다 scripts/ 의 자체 점검(--selftest)을 전부 돌려 PR 에 ✓/✗ 를 붙인다 (2026-09-25).
+# 다른 워크플로는 전부 시간표·버튼·merge 뒤에 돈다 — merge **전에** 도는 검사는 이것 하나다.
+# --selftest 는 네트워크·Secrets 없이 도는 것만 모았다. 새 스크립트에 --selftest 를 달면 자동으로 들어온다.
+# 빌드 검사는 Vercel Preview 배포가 따로 한다.
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  selftest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: scripts 자체 점검
+        run: |
+          set -euo pipefail
+          for f in $(grep -l -- '--selftest' scripts/*.py); do
+            echo "::group::$f"
+            python "$f" --selftest
+            echo "::endgroup::"
+          done
