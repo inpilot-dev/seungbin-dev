@@ -1,0 +1,13 @@
+<think> 태그를 없애도 모델은 똑같이 똑똑하다.
+
+DeepSeek-R1류 모델의 think 블록을 보면 이 태그가 모델을 생각하게 만든다고 착각하기 쉽다. 하지만 원문은 반대로 말한다 — think 태그는 추론 능력과 무관한 장식이고, 떼어내도 같은 모델을 비슷한 성능으로 학습시킬 수 있다.
+
+RLVR은 정답을 기계적으로 검증할 수 있는 영역에서 최종 답에만 보상을 건다. DeepSeek-R1도 중간 사고 과정을 학습에 써보려 했지만 도움이 안 돼 포기했다. 스스로 실수를 되짚는 "aha moment"는 그 과정을 가르쳐서가 아니라, 답만 맞히라고 시켰더니 부산물로 나온 것이다.
+
+계산량을 실제로 정하는 건 사이즈가 아니라 effort 레벨이다. 사이즈는 학습 시점에 고정되어 얼마나 잘 푸는지를 정하고, effort 레벨은 요청마다 달라지며 이번 답에 계산을 얼마나 태울지를 정한다. GPT-5.6이 세 가지 사이즈마다 5~6개의 effort 설정을 갖는 것도 같은 이유다.
+
+파이프라인에서 실제로 만질 수 있는 파라미터는 effort 레벨이다 — think 태그가 아니라.
+
+📷 Photos: Beyza Kaplan, Nemuel Sereti, ThisIsEngineering, Mikhail Nilov, Robert Clark, Suguru Kagamifuchi on Pexels
+
+#추론모델 #강화학습 #인퍼런스스케일링 #reasoningeffort #LLM #AI모델 #딥시크 #RLVR #머신러닝 #프롬프트엔지니어링 #GPT #추론AI
