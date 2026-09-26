@@ -156,7 +156,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
-          BRANCH: ${{ github.event.pull_request.headRefName }}
+          BRANCH: ${{ github.event.pull_request.head.ref }}  # headRefName 은 gh CLI 이름 — 이벤트 페이로드엔 없어서 빈 값이었다(#92)
         run: |
           set -euo pipefail
           # 브랜치 이름이 곧 카드 폴더 이름이다(card-news render.yml 이 그렇게 만든다)
