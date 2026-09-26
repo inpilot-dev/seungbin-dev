@@ -65,6 +65,37 @@ _SRC_CACHE: dict[str, tuple[str, str]] = {}
 LOCAL_SRC = "(로컬 출처)"   # repo 밖 파일을 출처로 준 글의 frontmatter 표기. cite() 참조
 
 
+# x.com 글 페이지는 JS 껍데기다(2026-09-26 실측: 178KB 빈 앱, 본문 0자) — 그대로 받으면 "출처가 비었다" 로 멈춘다.
+# FixTweet 공개 API 는 긴 글(note)·인용한 글·X 아티클 본문까지 JSON 으로 준다. 토큰 없이 된다.
+X_STATUS = re.compile(r"https?://(?:www\.|mobile\.)?(?:x|twitter)\.com/[^/]+/status/(\d+)")
+FX_API = "https://api.fxtwitter.com/i/status/"
+
+
+def x_text(ref: str) -> str:
+    """x.com 글 하나 → 출처 본문(글 + 인용한 글 + 각자의 X 아티클). 못 받으면 빈 문자열.
+    ponytail: 제3자 프록시 하나에 기댄다. 죽으면 빈 본문 → 호출부가 "출처가 비었다" 로 멈춘다(지어내지 않는다).
+    그때는 syndication tweet-result(앞 280자뿐)로 폴백하거나 X API(X_BEARER_TOKEN)로 옮긴다."""
+    raw = cd.fetch(FX_API + X_STATUS.match(ref).group(1))
+    try:
+        t = json.loads(raw or b"{}").get("tweet") or {}
+    except ValueError:
+        return ""
+
+    def one(t: dict, head: str) -> list[str]:
+        out = [f"{head} @{(t.get('author') or {}).get('screen_name', '?')} · {t.get('created_at', '')}",
+               t.get("text", "")]
+        a = t.get("article") or {}
+        if a:
+            out += [f"[X 아티클] {a.get('title', '')}"] + \
+                   [b["text"] for b in (a.get("content") or {}).get("blocks", []) if b.get("text")]
+        return out
+
+    if not t:
+        return ""
+    lines = one(t, "[X 글]") + (["", *one(t["quote"], "[인용한 글]")] if t.get("quote") else [])
+    return "\n".join(lines).strip()
+
+
 def load_source(ref: str) -> tuple[str, str]:
     """(라벨, 본문). URL 이면 받아서 텍스트만, 아니면 로컬 파일. 한 번 읽은 건 캐시 — 후보 탐침 때 읽은
     본문을 생성 때 다시 안 받는다.
@@ -74,7 +105,9 @@ def load_source(ref: str) -> tuple[str, str]:
     되읽을 때 여기로 떨어진다."""
     if ref in _SRC_CACHE:
         return _SRC_CACHE[ref]
-    if ref.startswith("http"):
+    if X_STATUS.match(ref):
+        out = (ref, x_text(ref)[:SRC_MAX])
+    elif ref.startswith("http"):
         raw = cd.fetch(ref)
         out = (ref, (html_to_text(raw) if raw else "")[:SRC_MAX])
     else:
@@ -598,6 +631,21 @@ def selftest() -> int:
     # 못 읽는 로컬 파일은 예외가 아니라 빈 본문 — main 의 "못 읽었다" 경로로 떨어져야 한다
     _SRC_CACHE.clear()
     assert load_source("/nonexistent/no-such-note.md")[1] == ""
+    _SRC_CACHE.clear()
+
+    # x.com 글 → FixTweet JSON 에서 본문·인용·아티클. 글 페이지가 아니면 평소 경로
+    real_fetch = cd.fetch
+    fx = {"tweet": {"author": {"screen_name": "a"}, "created_at": "d", "text": "본문 +$489,494",
+                    "quote": {"author": {"screen_name": "b"}, "text": "인용",
+                              "article": {"title": "아티클 제목", "content": {"blocks": [{"text": "문단1"}, {"text": ""}]}}}}}
+    cd.fetch = lambda u, *a, **k: json.dumps(fx).encode() if u.startswith(FX_API) else b"<p>page</p>"  # noqa: E731
+    t = load_source("https://x.com/a/status/123?s=52")[1]
+    assert "[X 글] @a" in t and "+$489,494" in t and "[인용한 글] @b" in t and "[X 아티클] 아티클 제목" in t and "문단1" in t, t
+    assert load_source("https://twitter.com/a/status/456/video/1")[1].startswith("[X 글]")
+    assert "page" in load_source("https://x.com/a")[1]            # 글 페이지가 아닌 x.com 은 평소 경로
+    cd.fetch = lambda *a, **k: None   # noqa: E731
+    assert load_source("https://x.com/a/status/789")[1] == ""     # 못 받으면 빈 본문 — 지어내지 않는다
+    cd.fetch = real_fetch
     _SRC_CACHE.clear()
 
     # frontmatter 만 가리면 절반이다 — 프롬프트 라벨로도 새면 모델이 본문에 인용하고, **본문은 렌더된다**
