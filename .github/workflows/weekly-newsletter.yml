@@ -59,6 +59,9 @@ jobs:
           DRY: ${{ inputs.dry_run && '1' || '' }}
         run: |
           set -euo pipefail
+          # open_pr 가 git commit 을 한다 — 러너엔 커밋 신원이 없다(9/27 첫 예약 실행이 여기서 죽었다)
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           # 배열로 넘긴다 — 빈 값을 따옴표째 넘기면 빈 인자가 하나 들어가 argparse 가 죽는다
           ARGS=()
           if [ -n "${NOW:-}" ]; then ARGS+=(--now "$NOW"); fi
