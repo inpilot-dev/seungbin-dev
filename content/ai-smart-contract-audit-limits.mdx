@@ -1,0 +1,80 @@
+---
+topic: "2026년 기준으로 AI를 스마트 컨트랙트 감사에 활용하는 방법을 안내하는 글 (제목만 확인됨)"
+sources: ["https://dev.to/rogt7/how-to-use-ai-for-smart-contract-audits-in-2026-42ph"]
+slug: "ai-smart-contract-audit-limits"
+title: "취약점을 찾아도 빌드가 통과한다 — 2026년 AI 스마트 컨트랙트 감사"
+description: "AI 감사는 정적 분석이 못 보는 컨트랙트 간 흐름을 보겠다고 하지만, 결과를 빌드 실패 조건으로 묶지 않으면 로그만 남는다."
+date: "2026-10-03"
+category: "Automate"
+tags: ["스마트컨트랙트", "보안감사", "LLM"]
+---
+
+취약점을 찾아도 빌드는 통과한다. 출처 글이 CI/CD용으로 내놓은 AI 감사 스크립트를 끝까지 읽으면 이 결론이 나온다. 이 스크립트는 발견한 이슈를 출력만 하고, 예외는 API가 200이 아닐 때만 던진다.
+
+## 정적 분석이 못 보는 영역을 AI에게 넘긴다
+
+출처의 출발점은 기존 도구의 한계다.
+
+> "Legacy static analysis tools, while still useful for basic syntax checks, are insufficient for detecting complex logical vulnerabilities in advanced DeFi protocols."
+> — https://dev.to/rogt7/how-to-use-ai-for-smart-contract-audits-in-2026-42ph
+
+AI 쪽이 내세우는 차이는 탐지 단위다. 줄 단위 패턴 매칭이 아니라 **여러 컨트랙트에 걸친 데이터 흐름**을 본다는 것이다. 출처는 재진입을 예로 든다. 상태 변경 안의 외부 호출만 찾는 게 아니라, 컨트랙트 사이의 흐름을 따라가 "cross-contract attack vectors"를 찾는다고 쓴다.
+
+| 구분 | 레거시 정적 분석 | AI 에이전트 (출처 주장) |
+|---|---|---|
+| 보는 단위 | 줄, 패턴 | 코드베이스 전체 |
+| 재진입 탐지 | 상태 변경 안의 외부 호출 | 컨트랙트 간 데이터 흐름 |
+| 이해하는 것 | 문법 | `swap`, `mint` 같은 함수의 의도 |
+
+다만 이 표의 오른쪽 열은 전부 출처의 주장이다. 출처는 탐지율이나 비교 실험을 제시하지 않는다.
+
+## 파이프라인에 넣는 형태는 POST 한 번이다
+
+출처의 구현은 Solidity 코드를 감사 API에 보내고 결과를 받아 출력하는 파이썬 함수 하나다. 핵심은 payload다.
+
+```python
+payload = {
+    "language": "solidity",
+    "code": code_snippet,
+    "focus_areas": ["reentrancy", "access_control", "logic_bugs"],
+    "severity_threshold": "MEDIUM"   # 이 값이 곧 '무엇을 안 볼지'의 결정
+}
+```
+
+`focus_areas`와 `severity_threshold`는 **AI에게 넘기는 범위 결정**이다. 무엇을 볼지를 사람이 먼저 정한다.
+
+## 출력만 하면 감사가 아니라 로그다
+
+응답 처리는 이렇게 되어 있다.
+
+```python
+for issue in results.get("vulnerabilities", []):
+    print(f"[{issue['severity']}] {issue['description']}")   # 틀림: 찍고 끝
+# ...
+raise Exception(f"API Error: {response.status_code}")         # 실패는 API 오류일 때만
+```
+
+이대로 CI에 넣으면 API 장애가 나면 빌드가 깨지고, 재진입이 발견되면 빌드가 통과한다. 순서가 거꾸로다. CI에 넣는다면 `vulnerabilities`가 비어 있지 않을 때 0이 아닌 코드로 종료해야 한다. 그래야 **사람이 읽기 전에 머지가 막힌다.**
+
+## 예제 코드 자체가 재진입 패턴이다
+
+출처가 샘플로 넣은 함수는 이렇다. 출처 본문은 여기서 끊겨 있다.
+
+```solidity
+function withdraw() public {
+    uint256 amount = balances[msg.sender];
+    (bool success, ) = msg.sender.call{value: amount}("");  // 틀림: 잔액 정리 전에 외부 호출
+    if (!success) revert WithdrawFailed();
+```
+
+보이는 범위에서는 잔액을 비우는 줄이 외부 호출보다 앞에 없다. 줄 단위 스캐너도 잡는 고전적인 모양이다. 그래서 이 샘플로는 출처가 강조한 컨트랙트 간 탐지를 확인할 수 없다. AI 감사를 시험하려면 **단일 파일 패턴으로는 안 잡히는 케이스**를 넣어야 한다.
+
+## 안 한 것
+
+출처의 엔드포인트(`api.audit-ai.io`)는 호출해보지 않았다. 그래서 응답 품질, 오탐 비율, 가격에 대해서는 아무것도 쓰지 않았다. 출처에도 그 수치는 없다.
+
+정적 분석을 걷어내라는 결론도 내지 않는다. 출처조차 기존 도구가 "basic syntax checks"에는 여전히 유용하다고 쓴다. 나는 기존 스캐너는 그대로 두고, AI는 그 위에 한 겹 더 얹는 쪽으로 간다. 두 결과가 다를 때가 사람이 볼 지점이다.
+
+AI 감사 결과 하나만 근거로 배포를 승인하지 않는다. 판정 근거가 출처의 주장뿐인 도구에 배포 승인을 맡기는 건 범위를 넘는다.
+
+> AI 감사는 컨트랙트 사이를 보겠다고 하지만, 결과가 빌드를 깨지 못하면 그냥 print문이다.
