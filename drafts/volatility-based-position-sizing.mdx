@@ -1,0 +1,73 @@
+---
+topic: "암호화폐 트레이더가 AI로 리스크를 관리하는 방법을 소개하는 글 (제목만 확인됨)"
+sources: ["https://dev.to/rogt7/ai-driven-risk-management-for-crypto-traders-4od2"]
+slug: "volatility-based-position-sizing"
+title: "AI 리스크 관리 코드를 열어보니 rolling std였다 — 변동성 기반 포지션 사이징"
+description: "글이 말하는 AI 리스크 관리의 핵심은 머신러닝이 아니라 변동성이 커지면 포지션을 줄이는 공식 하나이고, 검증은 walk-forward로 해야 한다."
+date: "2026-10-10"
+category: "Build"
+tags: ["리스크관리", "포지션사이징", "암호화폐", "백테스트"]
+---
+
+"AI-driven"이라고 적힌 리스크 관리 예제의 코드를 열어보면 머신러닝 모델이 없다. **rolling 표준편차 하나**가 전부다. 그래도 이 공식은 쓸모가 있다. 다만 AI라는 이름 때문에 쓰는 게 아니라, 변동성에 맞춰 크기를 줄이기 때문에 쓴다.
+
+## 고정 규칙은 시장보다 늦다
+
+출처 글은 출발점을 이렇게 적는다.
+
+> "volatility without a framework is simply chaos" — https://dev.to/rogt7/ai-driven-risk-management-for-crypto-traders-4od2
+
+글에 따르면 기존 방식은 고정 손절, 고정 포지션 크기, 수동 심리 분석이고, 이런 방식은 시장의 미세한 움직임을 늦게 따라간다. 대안으로 내세우는 게 동적 포지션 사이징이다.
+
+| 항목 | 고정 규칙 | 동적 사이징 |
+|---|---|---|
+| 손절 거리 | 미리 정해둔 값 | 최근 변동성에서 계산 |
+| 포지션 크기 | 고정 비율 | 손절 거리에 반비례 |
+| 입력 데이터 | 가격 | 글의 주장: 변동성, 호가 깊이, 소셜 심리 |
+
+글은 호가 깊이와 소셜 심리까지 쓴다고 하지만, **예제 코드에 실제로 들어간 건 가격 변동성뿐**이다.
+
+## 공식은 손실 한도를 거꾸로 푼다
+
+출처 코드를 그대로 옮기고 판정 주석만 한국어로 달았다.
+
+```python
+import numpy as np
+import pandas as pd
+
+def calculate_dynamic_position_size(price_series, window=20, risk_tolerance=0.02):
+    # 변동성 대리 지표: AI가 아니라 rolling std
+    volatility = price_series.rolling(window).std()
+    current_price = price_series.iloc[-1]
+    # 손절 거리 = 최근 변동성 * 2
+    stop_distance = volatility.iloc[-1] * 2
+    capital = 10000
+    # 거래 한 번에 잃을 수 있는 최대 금액
+    max_loss_per_trade = capital * risk_tolerance
+    # 손절 거리를 가격 대비 비율로 바꿔서 나눈다
+    position_size = max_loss_per_trade / (stop_distance / current_price)
+    return position_size, stop_distance
+```
+
+구조는 단순하다. 먼저 잃어도 되는 금액을 정하고, 손절 거리가 넓으면 크기를 줄인다. 글의 설명대로 변동성이 튀면 `stop_distance`가 넓어지고 `position_size`가 줄어서 **리스크 프로파일이 일정하게 유지**된다. 변동성이 낮은 구간에서는 반대로 크기가 커진다.
+
+반환값 `position_size`는 코인 개수가 아니라 **포지션 금액**이다. 주문 수량으로 바꾸려면 현재가로 한 번 더 나눠야 한다. 이걸 놓치면 단위가 어긋난 채로 주문이 나간다.
+
+## 백테스트 수익률은 믿지 않는다
+
+글은 과적합을 따로 경고한다. 크립토 과거 데이터로 AI 모델을 백테스트하면 레짐 변화 때문에 수익률이 속을 만큼 높게 나올 수 있다고 한다. 처방도 한 줄로 준다.
+
+> "Always use walk-forward analysis to validate strategy robustness" — https://dev.to/rogt7/ai-driven-risk-management-for-crypto-traders-4od2
+
+전체 기간에 파라미터를 한 번 맞추면 미래 구간까지 보고 고른 셈이 된다. `window`와 배수를 바꿔가며 고르는 순간 이 공식도 똑같이 과적합된다.
+
+## 안 한 것
+
+- 소셜 심리, 고래 지갑 이동, Fear & Greed 지수는 다루지 않았다. 글은 데이터 소스로 언급만 하고 구현은 보여주지 않는다.
+- 실거래 성과 수치는 없다. 출처에 없어서 쓰지 않는다.
+- 이 공식은 한 종목, 한 거래 단위다. 여러 포지션이 동시에 같은 방향으로 움직이는 상관 리스크는 막지 못한다.
+- 갭이나 급락처럼 손절가를 건너뛰는 체결은 가정 밖이다. 손절 거리가 지켜진다는 전제 위에서만 손실 한도가 맞다.
+
+리스크 관리를 제대로 하는 건 모델이 아니라 **손실 한도를 먼저 정하는 순서**다.
+
+> 한 줄 요약: 잃어도 되는 금액을 먼저 정하고, 변동성으로 손절 거리를 잡고, 크기는 그 둘에서 역산하고, 검증은 walk-forward로 한다.
