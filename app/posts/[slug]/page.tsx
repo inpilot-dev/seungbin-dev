@@ -3,7 +3,7 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { Container } from "@/components/layout/Container";
 import { getAllPosts, getPostBySlug } from "@/lib/content";
-import { buildMetadata, SITE } from "@/lib/metadata";
+import { buildMetadata, ldJson, ogImageUrl, PERSON_ID, SITE } from "@/lib/metadata";
 import { Cover } from "@/components/post-list/Cover";
 import { Mdx } from "@/components/reader/Mdx";
 import { TOC } from "@/components/reader/TOC";
@@ -58,8 +58,23 @@ export default async function PostPage({
         `여기에 주 몇 시간쯤 씁니다:\n`,
     )}`;
 
+  // 화면에 보이는 것만 — 제목·날짜(수정일 포함)는 아래 h1·날짜 줄과 같은 값이다. FAQ 가 없으니 FAQPage 도 없다
+  const ld = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: post.title,
+    description: post.description,
+    datePublished: post.date,
+    dateModified: post.updated ?? post.date,
+    author: { "@id": PERSON_ID },
+    image: ogImageUrl({ title: post.title, tags: post.tags }),
+    inLanguage: "ko",
+    mainEntityOfPage: `${SITE.url}/posts/${slug}`,
+  };
+
   return (
     <>
+      <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: ldJson(ld) }} />
       <ReadingProgress />
       <Container className="py-12">
         <div className="grid grid-cols-1 gap-12 lg:grid-cols-[minmax(0,1fr)_200px]">
@@ -68,7 +83,9 @@ export default async function PostPage({
               {post.title}
             </h1>
             <p className="mt-3 text-sm text-muted-foreground">
-              {post.date} · {post.readingTime} <ViewCounter slug={slug} />
+              {post.date}
+              {post.updated && post.updated !== post.date && ` (수정 ${post.updated})`} · {post.readingTime}{" "}
+              <ViewCounter slug={slug} />
             </p>
             <Cover
               post={post}
