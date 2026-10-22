@@ -3,7 +3,7 @@ import "./globals.css";
 import { Header } from "@/components/layout/Header";
 import { Footer } from "@/components/layout/Footer";
 import { ThemeProvider } from "@/components/theme-provider";
-import { buildMetadata } from "@/lib/metadata";
+import { buildMetadata, ldJson, PERSON_ID, SAME_AS, SITE } from "@/lib/metadata";
 import { Analytics } from "@vercel/analytics/next";
 
 // next/font 는 빌드타임에 폰트를 self-host → 런타임 외부 CDN 요청 없음 (self-contained 제약 충족)
@@ -23,6 +23,19 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <body className="flex min-h-screen flex-col font-sans antialiased">
+        {/* 전역 한 번 — 글의 BlogPosting 은 author 를 PERSON_ID 로 가리킨다 */}
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: ldJson({
+              "@context": "https://schema.org",
+              "@graph": [
+                { "@type": "WebSite", "@id": `${SITE.url}/#website`, name: SITE.name, url: SITE.url, inLanguage: "ko", publisher: { "@id": PERSON_ID } },
+                { "@type": "Person", "@id": PERSON_ID, name: SITE.name, url: SITE.url, sameAs: SAME_AS },
+              ],
+            }),
+          }}
+        />
         <a
           href="#main-content"
           className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-3 focus:z-50 focus:rounded-md focus:bg-background focus:px-4 focus:py-2 focus:text-foreground focus:outline focus:outline-2 focus:outline-offset-2 focus:outline-foreground"

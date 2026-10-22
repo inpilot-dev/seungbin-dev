@@ -19,6 +19,7 @@ function parseFile(slug: string): { post: Post; content: string } {
     title: typeof data.title === "string" ? data.title : slug,
     description: typeof data.description === "string" ? data.description : "",
     date: data.date ? String(data.date).slice(0, 10) : "",
+    updated: data.updated ? String(data.updated).slice(0, 10) : undefined,
     tags: Array.isArray(data.tags) ? data.tags.map(String) : [],
     category: typeof data.category === "string" ? data.category : undefined,
     coverCmd: typeof data.coverCmd === "string" ? data.coverCmd : undefined,

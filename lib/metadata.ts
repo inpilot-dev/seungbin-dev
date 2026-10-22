@@ -19,6 +19,17 @@ if (!SITE.contact) {
   console.warn("[inpilot] CONTACT_EMAIL 미설정 — 게시물 하단 진단 콜 CTA 를 숨긴다 (인바운드 지표가 0 으로 고정)");
 }
 
+// JSON-LD 의 사람 — 이름은 화면에 보이는 것(inpilot)만 쓴다. sameAs = 같은 실체의 채널 계정
+export const PERSON_ID = `${SITE.url}/#person`;
+export const SAME_AS = [
+  "https://github.com/inpilot-dev",
+  "https://www.threads.com/@inpilot.dev",
+  "https://www.instagram.com/inpilot.dev/",
+];
+
+/** <script type="application/ld+json"> 본문. `<` 를 이스케이프한다 — 글 제목에 `<think>` 같은 게 들어온다 */
+export const ldJson = (data: object) => JSON.stringify(data).replace(/</g, "\\u003c");
+
 export function ogImageUrl(params: { title: string; tags?: string[] }): string {
   const sp = new URLSearchParams({ title: params.title });
   if (params.tags?.length) sp.set("tags", params.tags.join(","));
