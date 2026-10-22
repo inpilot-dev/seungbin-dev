@@ -1,0 +1,62 @@
+---
+topic: "AI 에이전트가 훈련과 인증을 거쳐 작업 건당 보수를 받는 '일자리' 구조를 만든 사례가 소개됨"
+sources: ["https://dev.to/autonomad/we-built-a-job-for-ai-agents-train-get-certified-get-paid-per-trip-55fg"]
+slug: "agent-job-certification-sandbox"
+title: "인증받은 에이전트도 지금은 403을 받는다 — 에이전트 '일자리' 구조 뜯어보기"
+description: "Autonomad의 에이전트 일자리에서 가져갈 건 $NOMD 보수가 아니라 행동으로만 채점하는 인증 시험 설계다."
+date: "2026-10-22"
+category: "Automate"
+tags: ["AI에이전트", "MCP", "인증", "샌드박스"]
+coverCmd: "POST /v1/bookings"
+coverOut: "403 live_bookings_coming_soon"
+---
+
+Autonomad가 만든 에이전트 '일자리'에서 쓸 만한 건 보수가 아니라 **시험 설계**다. 인증은 지금도 받을 수 있지만 실제 예약은 아직 열리지 않았다.
+
+## 인증은 열려 있고 예약은 닫혀 있다
+
+이 사실은 글이 직접 적어 두었다. "Until they open, a certified agent's booking answers 403 live_bookings_coming_soon , and nothing is booked or charged." (https://dev.to/autonomad/we-built-a-job-for-ai-agents-train-get-certified-get-paid-per-trip-55fg). 실예약 오픈 날짜도 아직 없다고 했다.
+
+```text
+# 인증 완료 후, 실예약 오픈 전
+POST /v1/bookings
+403 live_bookings_coming_soon
+```
+
+구조는 이렇다. 무료로 가입한다. 일부러 틀어지는 샌드박스에서 훈련한 뒤 인증을 받는다. 그 뒤로는 자기 사람의 여행을 예약할 때마다 몫을 받는다. 다른 사람의 예약에 고용될 수도 있다. 보수는 $1로 고정된 $NOMD로 준다.
+
+## 기술은 신고가 아니라 관찰로 채점한다
+
+다섯 기술 가운데 어느 것도 "했다"고 주장해서는 인정되지 않는다. 에이전트의 행동에서만 기록된다.
+
+| 기술 | 기록되는 행동 |
+|---|---|
+| completed_stay | 예약 → 체크인 → 체크아웃 |
+| cancelled | 약관대로 취소. 약관에 없는 환불은 약속하지 않는다 |
+| chose_from_options | 검색 결과 2개 이상 중 하나를 예약 |
+| rebooked | 취소 후 같은 traveler_id로 겹치는 날짜 재예약 |
+| recovered_a_disruption | supplier_cancelled 발견 후 재예약 |
+
+샌드박스는 일부러 방해한다. 연습 호텔 예약은 대략 세 건 중 하나꼴로 숙소 쪽에서 나중에 취소한다. 알림은 오지 않는다. 예약 목록을 다시 읽어야 `status: "supplier_cancelled"`가 보인다. 검색 결과는 6시간 뒤 만료되고, 검색 한 번으로는 예약 한 건만 할 수 있다.
+
+예약 상태를 **다시 읽지 않으면 떨어진다.** 한 번 예약하고 끝내는 에이전트는 recovered_a_disruption을 끝내 못 딴다.
+
+## 연락이 안 닿는 에이전트는 인증하지 않는다
+
+다섯 기술을 다 보여 줘도 A2A 버스에 한 번도 체크인하지 않았다면 인증되지 않는다. 예약이 틀어졌을 때 연락이 닿아야 한다는 조건이다. 최근 15분 안에 체크인했으면 on duty다. `tasks/peek`를 `wait: 25`로 열어 두고 다시 연결하면 이 상태가 유지된다.
+
+자격증명도 같은 방향으로 다룬다. 툴을 호출하는 대신 MCP initialize 요청 헤더에 `x-agent-credential`을 실어 보내라고 권한다. 자격증명이 대화에 들어가지 않게 하려는 것이다.
+
+## 내 기준은 이렇다
+
+보수 조건은 판단에서 뺀다. 실예약 오픈 날짜가 없고, 지금 돌아오는 건 403이다. 아직 일어나지 않은 거래에서 $NOMD로 몫을 받는다는 조건은 따져 볼 거리가 아니라 약속일 뿐이다. 출처에 나온 금액(미국 1주 1인 약 $2,000, 해외 거의 $10,000)도 에이전트가 받는 돈이 아니라 여행 한 건의 규모다.
+
+나는 **시험지만 가져가는 쪽**으로 갔다. 에이전트를 평가할 때 자기 보고는 믿지 않고 관찰된 행동으로만 채점한다. 상태는 환경이 몰래 바꾸게 둔다. 보수 체계는 바뀌어도 이 채점 방식은 남는다.
+
+## 안 한 것
+
+이 서비스에 에이전트를 직접 연결해 보지 않았다. 등록과 인증 흐름은 출처 글의 설명만 보고 정리했다. 지갑 서명, DID 발급, 토큰 가치는 검증하지 않았다. 보수 체계가 괜찮은지 따지는 글도 아니다.
+
+다만 연습 단계라도 하나는 실제로 일어난다. 등록할 때 넣은 owner_email로 진짜 초대 메일이 간다. 연습 삼아 등록하더라도 주소는 본인 것을 쓴다. 실예약이 열리기 전에는 이 구조에 결제 수단을 연결할 이유가 없다.
+
+> 한 줄 요약: 보수는 약속이고 시험은 설계다. 가져갈 건 행동으로만 채점하는 샌드박스다.
