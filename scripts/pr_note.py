@@ -5,7 +5,10 @@
 /주제 N 도 본문을 진실로 읽는다(review_cmd). 알림이 따로 계산하면 둘이 어긋난다.
 이모지 없이, 결정에 필요한 것만: 제목 → 채점·기한 → (Threads 는 본문 전문 / 블로그는 후보) → 버튼 뜻 → 링크.
 
-사용 (auto-post.yml · review.yml 이 PR 을 연 직후 부른다):
+2026-10-22 부터 워크플로는 이걸 부르지 않는다 — 원고 PR 알림은 버튼과 함께 SideHustle 허브가 보낸다.
+허브의 lib/hub.js 에 이 파일의 이식본이 있다. 여기 형식(정규식·문장)을 바꾸면 그쪽도 같이 고친다.
+
+사용 (손으로 미리 보기):
   python3 scripts/pr_note.py https://github.com/…/pull/89
   python3 scripts/pr_note.py --selftest
 """
