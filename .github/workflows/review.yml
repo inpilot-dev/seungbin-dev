@@ -72,13 +72,12 @@ jobs:
           V=$( [ -f "drafts/threads/$SLUG.FAIL.md" ] && echo FAIL || echo PASS )
           URL=$(scripts/open_thread_pr.sh "$SLUG" "블로그 $BLOG_PR 의 파생 ($ON 발행)")
           { echo "url=$URL"; echo "on=$ON"; echo "verdict=$V"; } >> "$GITHUB_OUTPUT"
-          { echo "note<<__NOTE__"; python scripts/pr_note.py "$URL" || echo "$URL"; echo "__NOTE__"; } >> "$GITHUB_OUTPUT"
 
       # 카드뉴스만 다른 레포가 만든다 — 렌더러·Playwright·사진 장부가 card-news 에 있다(레포를 합치지 않는다).
       # 덱이 나오면 그쪽이 GH_PAT 으로 이 레포에 `원고:card` PR 을 연다. 10~30분 걸린다.
       # 스레드 생성이 실패해도 카드는 요청한다 — 둘은 독립된 파생이다
-      # 카드가 안 와도 블로그·Threads 는 이미 성공했다. 여기서 죽어 잡을 통째로 실패시키면
-      # 뒤의 Telegram 이 건너뛰어져 Threads PR 알림까지 같이 사라진다 — 실패는 알림에 한 줄로 싣는다
+      # 카드가 안 와도 블로그·Threads 는 이미 성공했다. 잡을 통째로 실패시키지 않고 실패는 아래 알림 한 줄로 보낸다
+      # (Threads 원고 PR 알림은 허브가 `원고:thread` 라벨 webhook 으로 보낸다 — 2026-10-22)
       - name: 카드뉴스 덱 요청 (card-news)
         id: card
         if: ${{ !cancelled() && steps.pick.outputs.post != '' }}
@@ -99,16 +98,15 @@ jobs:
             | GH_TOKEN="$PAT" gh api repos/inpilot-dev/card-news/dispatches --input -
           echo "::notice title=카드뉴스 요청::$SLUG — 10~30분 뒤 원고:card PR 이 열린다"
 
-      - name: Telegram
-        if: ${{ !cancelled() && steps.pr.outputs.url != '' }}
+      - name: Telegram (카드 요청 실패)
+        if: ${{ !cancelled() && steps.card.outcome == 'failure' }}
         uses: ./.github/actions/telegram
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
           text: |
-            ${{ steps.pr.outputs.note }}
-
-            ${{ steps.card.outcome == 'failure' && '카드뉴스 덱 요청 실패 — 덱은 안 온다. card-news 의 render 를 손으로 돌려라' || '카드뉴스 덱: 요청함. 10~30분 뒤 별도 PR 로 온다' }}
+            [카드뉴스 덱 요청 실패] 덱은 안 온다. card-news 의 render 를 손으로 돌려라
+            ${{ github.event.pull_request.html_url }}
 
   queued:
     name: Threads 승인 → 발행 대기
