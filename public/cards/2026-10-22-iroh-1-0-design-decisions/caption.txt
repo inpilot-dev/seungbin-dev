@@ -1,0 +1,14 @@
+iroh 1.0 회고에서 가장 쓸모 있는 건 새 기능이 아니라 버린 것의 목록이다.
+
+rust로 만든 ipfs 구현에서 출발한 iroh는 deltachat의 채팅 기록 이전이라는 좁은 요구조차 못 맞췄다. 의존성 트리가 너무 컸다. 그래서 호환을 끊고 Ed25519 공개키, BLAKE3, QUIC 하나로 줄였다. 기능은 빈약해졌지만 첫 실사용자를 얻었다.
+
+noise로 갈아타는 대신 TLS를 지켰고, 프로토콜 협상은 스트림마다가 아니라 ALPN 한 번으로 끝낸다. 대가로 경로 중간의 관찰자가 프로토콜 이름을 볼 수 있고, 프로토콜이 늘면 연결도 늘어난다.
+
+홀펀칭이 안 되는 네트워크에서는 릴레이로 보낸다. P2P 순수성은 목표가 아니라 포기할 수 있는 항목이었다.
+
+1.0 이후 벤치마크와 홀펀칭 성공률은 원문에 수치가 없어 다루지 않았다. 직접 돌려 본 결과가 아니라 회고 글 하나를 정리한 것이다.
+
+P2P 계층을 고를 때 기능 목록보다 뺀 것의 목록을 먼저 보자. 원문: iroh.computer/blog/the-road-to-iroh-1-0
+
+Photos: General Kenobi, Debraj, Valentin Ivantsov, Rūdolfs Klintsons, SHVETS production, Elina Emurlaeva, prajwal jpg, Robert Clark on Pexels (pexels.com)
+#iroh #P2P #피어투피어 #네트워킹 #홀펀칭 #QUIC #rust #러스트 #TLS #ALPN #오픈소스 #개발자 #백엔드
