@@ -11,17 +11,17 @@
   GET /{답글}/replies    → 내가 이미 답했으면 뺀다
 남은 것 중 최신 5건에 초안(llm.ask) → grade.deterministic("thread") 검사, 탈락이면 사유를 주고 1회 재시도.
 
-**전달은 Telegram 개인 채팅뿐이다** (리뷰 2026-09-19). 처음 설계(#54)는 GitHub Issue 였는데, 이 레포는 공개라
+**전달은 나만 보는 알림 채널뿐이다** (리뷰 2026-09-19 · 2026-10-28 텔레그램 → 디스코드, scripts/notify.py). 처음 설계(#54)는 GitHub Issue 였는데, 이 레포는 공개라
 남의 Threads 아이디·답글 본문을 공개로 옮겨 싣고 `@아이디` 가 같은 이름의 GitHub 계정을 멘션한다. Actions 로그도
-공개라 본문을 stdout·액션 입력으로 흘려도 똑같다. 그래서 --telegram 은 본문을 여기서 직접 보내고 로그엔 건수만 찍는다.
+공개라 본문을 stdout·액션 입력으로 흘려도 똑같다. 그래서 --notify 는 본문을 여기서 직접 보내고 로그엔 건수만 찍는다.
 
 환경변수:
   THREADS_TOKEN                        없으면 "미연결 — THREADS_TOKEN" 출력 후 0
-  TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID  --telegram 에 필요. 없으면 건수만 찍고 본문은 버린다(공개 로그 금지)
+  NOTIFY_CHANNEL·DISCORD_WEBHOOK_URL(·TELEGRAM_*)  --notify 에 필요(scripts/notify.py). 없으면 건수만 찍고 본문은 버린다(공개 로그 금지)
 
 사용:
   python3 scripts/comment_assist.py              # 로컬 DRY — 본문을 화면에 (Actions 에서 쓰지 마라: 로그가 공개다)
-  python3 scripts/comment_assist.py --telegram   # 본문은 Telegram 으로, stdout 엔 `댓글 대상 N건 …` 한 줄
+  python3 scripts/comment_assist.py --notify     # 본문은 디스코드(기본)로, stdout 엔 `댓글 대상 N건 …` 한 줄. --telegram 도 받는다
   python3 scripts/comment_assist.py --selftest
 종료 코드: 항상 0 — 미연결·API 오류·전송 실패도 슬롯 메시지를 깨지 않는다
 """
@@ -41,6 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import grade  # noqa: E402
 import llm  # noqa: E402
+import notify  # noqa: E402
 
 API = "https://graph.threads.net/v1.0"
 ROOT = Path(__file__).resolve().parent.parent
@@ -133,19 +134,6 @@ def body(targets: list[dict]) -> str:
     return "\n\n".join(parts) + f"\n\n{FOOTER}\n"
 
 
-def telegram(text: str) -> bool:
-    """본문을 여기서 직접 보낸다 — 워크플로 액션 입력으로 넘기면 공개 로그에 찍힌다. 4,000자씩 나눈다."""
-    tok, chat = os.environ.get("TELEGRAM_BOT_TOKEN", ""), os.environ.get("TELEGRAM_CHAT_ID", "")
-    if not (tok and chat):
-        return False
-    for i in range(0, len(text), 4000):
-        data = urllib.parse.urlencode({"chat_id": chat, "text": text[i:i + 4000],
-                                       "disable_web_page_preview": "true"}).encode()
-        with urllib.request.urlopen(f"https://api.telegram.org/bot{tok}/sendMessage", data, timeout=20) as r:
-            r.read()
-    return True
-
-
 def main(argv: list[str]) -> int:
     if "--selftest" in argv:
         return selftest()
@@ -164,17 +152,19 @@ def main(argv: list[str]) -> int:
     for t in targets:
         t["draft"] = draft_for(t)
     text = body(targets)
-    if "--telegram" not in argv:
+    if not {"--notify", "--telegram"} & set(argv):   # --telegram 은 예전 이름(2026-10-28 전 호출용)
         print(f"[DRY]\n{text}")
         return 0
-    try:
-        sent = telegram(text)
-    except Exception as e:  # noqa: BLE001  봇 토큰이 URL 경로에 있어 str(e) 는 안 찍는다
-        print(f"댓글 대상 {len(targets)}건 — Telegram 전송 실패 ({type(e).__name__})")
-        return 0
+    # 본문은 notify 가 직접 보낸다 — 워크플로 액션 입력으로 넘기면 공개 로그에 찍힌다. 실패 사유엔 주소·토큰이 없다
+    sent, errors = notify.send(text)
     # stdout 은 공개 로그다 — 건수만
-    print(f"댓글 대상 {len(targets)}건 — " + ("Telegram 으로 보냈다" if sent else
-                                          "Telegram 미연결, 본문은 버렸다(공개 로그에 안 찍는다)"))
+    head = f"댓글 대상 {len(targets)}건 — "
+    if errors:
+        print(head + "전송 실패: " + "; ".join(errors) + (f" (보냄: {', '.join(sent)})" if sent else ""))
+    elif sent:
+        print(head + f"보냈다({', '.join(sent)})")
+    else:
+        print(head + "알림 미연결, 본문은 버렸다(공개 로그에 안 찍는다)")
     return 0
 
 
@@ -200,15 +190,13 @@ def selftest() -> int:
         def __enter__(self): return self
         def __exit__(self, *a): return False
 
-    tg_sent: list[dict] = []
+    real_urlopen = urllib.request.urlopen
 
     def fake_urlopen(req, data=None, timeout=0):
         url = req if isinstance(req, str) else req.full_url
-        if url.startswith("https://api.telegram.org/"):
-            if state.get("tg_fail"):
-                raise urllib.error.URLError("down")
-            tg_sent.append(dict(urllib.parse.parse_qsl(data.decode())))
-            return Resp({"ok": True})
+        if url.startswith("http://127.0.0.1:"):   # 알림은 notify.FakeHook(127.0.0.1 가짜 서버)으로 진짜 HTTP
+            return real_urlopen(req, data, timeout=timeout)
+        assert url.startswith(API), url          # 그 밖의 곳(진짜 디스코드·텔레그램)엔 닿지 않는다
         method = "POST" if data is not None else ("GET" if isinstance(req, str) else req.get_method())
         u = urllib.parse.urlsplit(url)
         q = dict(urllib.parse.parse_qsl(u.query))
@@ -241,14 +229,15 @@ def selftest() -> int:
             rc = main(["x", *args])
         return rc, buf.getvalue()
 
-    env_keys = ("THREADS_TOKEN", "TELEGRAM_BOT_TOKEN", "TELEGRAM_CHAT_ID")
-    saved = (urllib.request.urlopen, llm.ask, {k: os.environ.get(k) for k in env_keys})
+    env_keys = ("THREADS_TOKEN", *notify.ENV_KEYS)
+    saved = (urllib.request.urlopen, llm.ask, {k: os.environ.get(k) for k in env_keys}, notify.TG_API)
     urllib.request.urlopen, llm.ask = fake_urlopen, fake_ask
     for k in env_keys:
         os.environ.pop(k, None)
+    hook = notify.FakeHook().__enter__()
     try:
-        rc, out = run(["--telegram"])
-        assert rc == 0 and "미연결 — THREADS_TOKEN" in out and not seen and not tg_sent
+        rc, out = run(["--notify"])
+        assert rc == 0 and "미연결 — THREADS_TOKEN" in out and not seen and not hook.posts
 
         os.environ["THREADS_TOKEN"] = TOK
         t = collect(TOK)
@@ -271,32 +260,45 @@ def selftest() -> int:
         llm_script[:] = [None]
         assert draft_for(t[0]) == "(초안 생성 실패 — 직접 작성)"
 
-        # DRY(로컬): 본문을 화면에, Telegram 안 보냄
+        # DRY(로컬): 본문을 화면에, 알림 안 보냄
         seen.clear()
         rc, out = run([])
-        assert rc == 0 and not tg_sent and "[DRY]" in out
+        assert rc == 0 and not hook.posts and "[DRY]" in out
         assert out.count("@u") == 5 and "│ 질문 5\n│ 둘째 줄" in out and "초안:" in out and FOOTER in out
 
-        # --telegram, 봇 미연결: 건수만, 본문(남의 아이디·답글)은 stdout(=공개 로그)에 한 글자도 안 나간다
-        rc, out = run(["--telegram"])
-        assert rc == 0 and out.strip() == "댓글 대상 5건 — Telegram 미연결, 본문은 버렸다(공개 로그에 안 찍는다)", out
-        assert "@u" not in out and "질문" not in out and not tg_sent
+        # --notify, 미연결: 건수만, 본문(남의 아이디·답글)은 stdout(=공개 로그)에 한 글자도 안 나간다
+        rc, out = run(["--notify"])
+        assert rc == 0 and out.strip() == "댓글 대상 5건 — 알림 미연결, 본문은 버렸다(공개 로그에 안 찍는다)", out
+        assert "@u" not in out and "질문" not in out and not hook.posts
 
-        # --telegram, 봇 연결: 본문은 Telegram 으로만, stdout 은 한 줄
-        os.environ.update(TELEGRAM_BOT_TOKEN="BOT-SECRET", TELEGRAM_CHAT_ID="42")
+        # --notify, 디스코드(기본): 본문은 웹후크로만, stdout 은 한 줄 · 웹후크 주소는 안 찍는다
+        os.environ["DISCORD_WEBHOOK_URL"] = hook.url
+        rc, out = run(["--notify"])
+        assert rc == 0 and out.strip() == "댓글 대상 5건 — 보냈다(discord)", out
+        sent = [json.loads(b) for _, _, b in hook.posts]
+        assert sent and sent[0]["allowed_mentions"] == {"parse": []} and "@u5" in sent[0]["content"]
+        assert all(len(s["content"]) <= 2000 for s in sent)
+        assert hook.url not in out and notify.FAKE_SECRET not in out
+        # 전송 실패(404): 0 으로 끝나고 주소는 안 찍는다
+        hook.posts.clear(); hook.replies[:] = [(404, b'{"message": "Unknown Webhook"}')]
+        rc, out = run(["--notify"])
+        assert rc == 0 and out.strip() == "댓글 대상 5건 — 전송 실패: discord HTTP 404", out
+        assert notify.FAKE_SECRET not in out
+
+        # --telegram 은 예전 이름 — 그대로 받고, NOTIFY_CHANNEL=telegram 이면 텔레그램으로(봇 토큰은 안 찍는다)
+        os.environ.update(NOTIFY_CHANNEL="telegram", TELEGRAM_BOT_TOKEN="BOT-SECRET", TELEGRAM_CHAT_ID="42")
+        notify.TG_API = hook.base
+        hook.posts.clear()
         rc, out = run(["--telegram"])
-        assert rc == 0 and out.strip() == "댓글 대상 5건 — Telegram 으로 보냈다", out
-        assert tg_sent and tg_sent[0]["chat_id"] == "42" and "@u5" in tg_sent[0]["text"]
-        # 전송 실패: 0 으로 끝나고 봇 토큰(URL 경로)은 안 찍는다
-        state["tg_fail"] = True
-        rc, out = run(["--telegram"])
-        assert rc == 0 and "전송 실패 (URLError)" in out and "BOT-SECRET" not in out
-        state["tg_fail"] = False
+        assert rc == 0 and out.strip() == "댓글 대상 5건 — 보냈다(telegram)", out
+        form = dict(urllib.parse.parse_qsl(hook.posts[0][2].decode()))
+        assert form["chat_id"] == "42" and "@u5" in form["text"] and "BOT-SECRET" not in out
+        os.environ.pop("NOTIFY_CHANNEL")
 
         # 대상 0건
         saved_replies = dict(replies)
         replies["p1"], replies["p2"] = [], []
-        rc, out = run(["--telegram"])
+        rc, out = run(["--notify"])
         assert rc == 0 and "댓글 대상 없음" in out
         replies.update(saved_replies)
 
@@ -307,7 +309,7 @@ def selftest() -> int:
 
         # API 오류(me 부터): 0 으로 끝나고 토큰은 안 새어 나간다
         state["fail"] = True
-        rc, out = run(["--telegram"])
+        rc, out = run(["--notify"])
         assert rc == 0 and out.startswith("미연결 — Threads GET me → HTTP 500") and TOK not in out, out
         state["fail"] = False
 
@@ -320,7 +322,8 @@ def selftest() -> int:
         # 어떤 경로에서도 POST 는 없다
         assert seen and all(m == "GET" for m, _ in seen), seen
     finally:
-        urllib.request.urlopen, llm.ask = saved[0], saved[1]
+        hook.__exit__()
+        urllib.request.urlopen, llm.ask, notify.TG_API = saved[0], saved[1], saved[3]
         for k, v in saved[2].items():
             if v is None:
                 os.environ.pop(k, None)

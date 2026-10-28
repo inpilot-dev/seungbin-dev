@@ -7,7 +7,7 @@ name: publish-queue
 #   대상 고르기·장부는 scripts/publish_queue.py. 장부(drafts/threads/.published.json)를 main 에 커밋한다 —
 #   vercel.json ignoreCommand 가 drafts/ 만 바뀐 커밋은 배포하지 않는다.
 # ⚠️ Secret: THREADS_TOKEN · IG_ACCESS_TOKEN·IG_USER_ID · RESEND_API_KEY·RESEND_AUDIENCE_ID·RESEND_FROM
-#   — 없으면 각 스크립트가 DRY(무엇이 나갈지만 찍고 장부는 안 쓴다) · TELEGRAM_*(없으면 알림 생략)
+#   — 없으면 각 스크립트가 DRY(무엇이 나갈지만 찍고 장부는 안 쓴다) · DISCORD_WEBHOOK_URL(없으면 알림 생략, 변수 NOTIFY_CHANNEL)
 on:
   schedule:
     - cron: "0 0 * * 1,3,4,5"
@@ -132,6 +132,8 @@ jobs:
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          channel: ${{ vars.NOTIFY_CHANNEL }}
           text: |
             ${{ (steps.pub.outcome == 'failure' || steps.ig.outcome == 'failure' || steps.nl.outcome == 'failure') && '[발행 결과] 실패가 있다 — 맨 아래 실행 기록을 보라' || '[발행 결과]' }}
             ${{ steps.pub.outputs.msg }}

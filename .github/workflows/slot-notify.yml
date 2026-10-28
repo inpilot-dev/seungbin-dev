@@ -1,11 +1,11 @@
 name: slot-notify
 
-# 일 20:00 KST 슬롯 알림 (증분 2·3, 2026-09-18~19). 긴 메시지는 telegram 액션이 4,096자씩 나눈다.
+# 일 20:00 KST 슬롯 알림 (증분 2·3, 2026-09-18~19). 긴 메시지는 알림 액션(scripts/notify.py)이 줄 단위로 나눈다(디스코드 2,000자).
 #   ① 열린 원고 PR(라벨별 · 탈락/보류) + 발행 예정 — slot_notify.py
 #   ② 계기판(직전 7일, #53) — dashboard.py --append → state/dashboard.jsonl 을 main 에 커밋(vercel 은 state/ 무시)
-#   ③ 댓글 대상 5건 + 초안(#54) — comment_assist.py --telegram 이 **직접** 보낸다. 남의 아이디·답글이라
+#   ③ 댓글 대상 5건 + 초안(#54) — comment_assist.py --notify 가 **직접** 보낸다. 남의 아이디·답글이라
 #      공개 로그·액션 입력에 싣지 않는다(레포가 공개다). 슬롯 메시지엔 건수 한 줄만.
-# ⚠️ Secret: TELEGRAM_* · RESEND_API_KEY·RESEND_AUDIENCE_ID · THREADS_TOKEN · CLAUDE_CODE_OAUTH_TOKEN(초안) — 없으면 "미연결"
+# ⚠️ Secret: DISCORD_WEBHOOK_URL(변수 NOTIFY_CHANNEL, 비면 discord · telegram 이면 TELEGRAM_*) · RESEND_API_KEY·RESEND_AUDIENCE_ID · THREADS_TOKEN · CLAUDE_CODE_OAUTH_TOKEN(초안) — 없으면 "미연결"
 on:
   schedule:
     - cron: "0 11 * * 0"
@@ -37,14 +37,16 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          NOTIFY_CHANNEL: ${{ vars.NOTIFY_CHANNEL }}
         run: |
           set -euo pipefail
-          for f in slot_notify dashboard comment_assist; do python "scripts/$f.py" --selftest >/dev/null; done
+          for f in slot_notify dashboard notify comment_assist; do python "scripts/$f.py" --selftest >/dev/null; done
           gh pr list --state open --limit 100 --json number,title,url,labels | python scripts/slot_notify.py > msg.txt
           # 계기판·댓글은 부가 정보 — 죽어도 원고 목록은 나간다
           { echo; python scripts/dashboard.py --append || echo "[계기판 실패] 실행 기록을 보라"; } >> msg.txt
-          # stdout 은 건수 한 줄뿐(본문은 스크립트가 Telegram 으로 직접)
-          { echo; python scripts/comment_assist.py --telegram || echo "[댓글 보조 실패] 실행 기록을 보라"; } >> msg.txt
+          # stdout 은 건수 한 줄뿐(본문은 스크립트가 알림 채널로 직접)
+          { echo; python scripts/comment_assist.py --notify || echo "[댓글 보조 실패] 실행 기록을 보라"; } >> msg.txt
           cat msg.txt
           { echo "text<<EOF"; cat msg.txt; echo "EOF"; } >> "$GITHUB_OUTPUT"
       - name: 계기판 기록 커밋
@@ -66,4 +68,6 @@ jobs:
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          channel: ${{ vars.NOTIFY_CHANNEL }}
           text: ${{ steps.msg.outputs.text }}
