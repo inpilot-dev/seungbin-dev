@@ -6,6 +6,8 @@ export interface Post {
   description: string;
   /** ISO 날짜 문자열 "YYYY-MM-DD" */
   date: string;
+  /** 고친 날 "YYYY-MM-DD" — frontmatter `updated` 가 있을 때만. 사이트맵 lastmod · BlogPosting dateModified */
+  updated?: string;
   tags: string[];
   /** Build | Automate | Grow 슈퍼카테고리 */
   category?: string;

@@ -14,6 +14,9 @@ name: auto-post
 # GITHUB_TOKEN 이 만든 PR 은 봇 자신의 이벤트로는 워크플로를 깨우지 않지만, 사람의 merge·댓글은 깨운다
 # (docs/research-2026-09-10.md §3). 그래서 검수 표면이 PR 이어도 된다.
 #
+# 원고 PR 결정 알림(버튼 포함)은 이 레포가 아니라 허브가 보낸다 — `원고:*` 라벨 webhook 을 받는다(2026-10-22).
+# 여기 남은 알림(scripts/notify.py — 디스코드 기본)은 실패 알림뿐이다.
+#
 # ⚠️ Secret: CLAUDE_CODE_OAUTH_TOKEN(필수) · DISCORD_WEBHOOK_URL(없으면 알림만 생략, 변수 NOTIFY_CHANNEL)
 on:
   schedule:
@@ -131,7 +134,6 @@ jobs:
           echo "pr=$PR" >> "$GITHUB_OUTPUT"
           echo "verdict=${VERDICT:-?}" >> "$GITHUB_OUTPUT"
           [ -n "$PR" ] || { echo "::error title=PR 없음::원고 PR 이 열리지 않았다 — 위 로그를 보라"; exit 1; }
-          { echo "note<<__NOTE__"; python scripts/pr_note.py "$PR" || echo "$PR"; echo "__NOTE__"; } >> "$GITHUB_OUTPUT"
 
       # 논평 ①②: 블로그가 고른 출처(열린 PR)와 이전 논평의 출처를 뺀 후보 1번. 탈락이어도 PR 로 올린다
       - name: 논평 원고 PR
@@ -152,27 +154,6 @@ jobs:
           URL=$(scripts/open_thread_pr.sh "$SLUG" "다이제스트 논평 ($ON 발행)")
           echo "pr=$URL" >> "$GITHUB_OUTPUT"
           echo "verdict=$( [[ "$F" == *.FAIL.md ]] && echo FAIL || echo PASS )" >> "$GITHUB_OUTPUT"
-          { echo "note<<__NOTE__"; python scripts/pr_note.py "$URL" || echo "$URL"; echo "__NOTE__"; } >> "$GITHUB_OUTPUT"
-
-      - name: Telegram (논평)
-        if: ${{ !cancelled() && steps.thread.outputs.pr != '' }}
-        uses: ./.github/actions/telegram
-        with:
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
-          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          channel: ${{ vars.NOTIFY_CHANNEL }}
-          text: ${{ steps.thread.outputs.note }}
-
-      - name: Telegram
-        if: always() && steps.post.outputs.pr != ''
-        uses: ./.github/actions/telegram
-        with:
-          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
-          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
-          channel: ${{ vars.NOTIFY_CHANNEL }}
-          text: ${{ steps.post.outputs.note }}
 
       # 원고 PR 이 안 열렸으면 그 주 그 칸이 비다 — 침묵이 아니라 폰에 한 줄이 와야 한다 (한도·토큰·다이제스트 없음)
       - name: Telegram (실패)
