@@ -1,38 +1,20 @@
 name: telegram
-description: Telegram 으로 한 줄 알림. Secret 이 없으면 조용히 생략한다 — 알림은 부가가치지 전제가 아니다.
+description: 알림 한 통 — 디스코드 웹후크(기본)·텔레그램·둘 다 (2026-10-28 디스코드 이전, 이름은 호출처를 안 건드리려 그대로). 값이 없으면 조용히 생략한다 — 알림은 부가가치지 전제가 아니다.
 inputs:
-  token: { description: "TELEGRAM_BOT_TOKEN", required: false, default: "" }
-  chat: { description: "TELEGRAM_CHAT_ID", required: false, default: "" }
+  webhook: { description: "DISCORD_WEBHOOK_URL — secret 으로만 넘긴다. 주소 자체가 쓰기 권한이다", required: false, default: "" }
+  channel: { description: "NOTIFY_CHANNEL — discord(비면 이것)·telegram·both. 저장소 변수 vars.NOTIFY_CHANNEL", required: false, default: "" }
+  token: { description: "TELEGRAM_BOT_TOKEN (telegram·both)", required: false, default: "" }
+  chat: { description: "TELEGRAM_CHAT_ID (telegram·both)", required: false, default: "" }
   text: { description: "보낼 문장", required: true }
 runs:
   using: composite
   steps:
+    # 값은 with: → env 로만 흐른다 — 셸 명령줄·set -x 에 끼지 않는다. 나누기·429·멘션 끔·비노출은 scripts/notify.py(--selftest)
     - shell: bash
       env:
-        TG_TOKEN: ${{ inputs.token }}
-        TG_CHAT: ${{ inputs.chat }}
-        TG_TEXT: ${{ inputs.text }}
-      run: |
-        if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then
-          echo "::notice title=Telegram 생략::TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID 가 없다 — 9/21 손작업"
-          exit 0
-        fi
-        # 4,096자 상한 — 넘으면 줄 경계에서 나눠 여러 통으로 (2026-09-18, 슬롯 알림이 길어질 수 있다)
-        python3 - <<'PY'
-        import os, urllib.parse, urllib.request
-        text, chunks, cur = os.environ["TG_TEXT"], [], ""
-        for line in text.splitlines(keepends=True):
-            while len(line) > 4000:
-                chunks.append(line[:4000]); line = line[4000:]
-            if len(cur) + len(line) > 4000:
-                chunks.append(cur); cur = ""
-            cur += line
-        chunks.append(cur)
-        for c in filter(str.strip, chunks):
-            body = urllib.parse.urlencode({"chat_id": os.environ["TG_CHAT"], "text": c, "disable_web_page_preview": "true"}).encode()
-            try:   # 알림 실패로 워크플로를 빨갛게 만들지 않는다 — 전처럼 상태 코드만 찍는다
-                with urllib.request.urlopen(f"https://api.telegram.org/bot{os.environ['TG_TOKEN']}/sendMessage", body, timeout=20) as r:
-                    print("telegram HTTP", r.status)
-            except Exception as e:
-                print("telegram 실패:", e)
-        PY
+        DISCORD_WEBHOOK_URL: ${{ inputs.webhook }}
+        NOTIFY_CHANNEL: ${{ inputs.channel }}
+        TELEGRAM_BOT_TOKEN: ${{ inputs.token }}
+        TELEGRAM_CHAT_ID: ${{ inputs.chat }}
+        NOTIFY_TEXT: ${{ inputs.text }}
+      run: python3 "$GITHUB_ACTION_PATH/../../../scripts/notify.py"

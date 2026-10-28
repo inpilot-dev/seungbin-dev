@@ -15,9 +15,9 @@ name: auto-post
 # (docs/research-2026-09-10.md §3). 그래서 검수 표면이 PR 이어도 된다.
 #
 # 원고 PR 결정 알림(버튼 포함)은 이 레포가 아니라 허브가 보낸다 — `원고:*` 라벨 webhook 을 받는다(2026-10-22).
-# 여기 남은 Telegram 은 실패 알림뿐이다.
+# 여기 남은 알림(scripts/notify.py — 디스코드 기본)은 실패 알림뿐이다.
 #
-# ⚠️ Secret: CLAUDE_CODE_OAUTH_TOKEN(필수) · TELEGRAM_BOT_TOKEN·TELEGRAM_CHAT_ID(없으면 알림만 생략)
+# ⚠️ Secret: CLAUDE_CODE_OAUTH_TOKEN(필수) · DISCORD_WEBHOOK_URL(없으면 알림만 생략, 변수 NOTIFY_CHANNEL)
 on:
   schedule:
     - cron: "0 21 * * 5"   # 토 06:00 KST — 블로그 + 논평 ①
@@ -162,6 +162,8 @@ jobs:
         with:
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          channel: ${{ vars.NOTIFY_CHANNEL }}
           text: |
             [원고 만들기 실패] 이번 회차 원고가 일부 안 만들어졌다
             블로그 ${{ steps.post.outputs.pr != '' && '열림' || steps.mode.outputs.blog == 'true' && '안 열림' || '해당 없음' }} · 논평 ${{ steps.thread.outputs.pr != '' && '열림' || steps.mode.outputs.thread == 'true' && '안 열림' || '해당 없음' }}

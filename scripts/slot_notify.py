@@ -5,7 +5,7 @@
 라벨 `원고:*` 인 PR 만 라벨별로 묶고 `탈락`·`보류` 를 표시한다. 그 아래에 main 의 승인된 Threads 원고 중
 아직 안 나간 것의 발행 예정일을 붙인다. 계기판·댓글 대상은 증분 3 에서 같은 메시지에 붙인다.
 
-Telegram 4,096자 상한은 .github/actions/telegram 이 나눠 보낸다 — 여기선 길이를 신경 쓰지 않는다.
+알림 길이 상한(디스코드 2,000자)은 .github/actions/telegram → scripts/notify.py 가 나눠 보낸다 — 여기선 길이를 신경 쓰지 않는다.
 
 사용:
   gh pr list --state open --json number,title,url,labels | python3 scripts/slot_notify.py
