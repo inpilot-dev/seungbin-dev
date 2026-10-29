@@ -1,4 +1,5 @@
 name: publish-queue
+run-name: ${{ (github.event_name == 'schedule' || inputs.once) && '예약 · publish-queue' || 'publish-queue' }}
 
 # 승인된(main 에 merge 된) 원고를 채널 시각에 낸다 — 09:00 KST (증분 2·4·6, 2026-09-18).
 #   Threads 월·수·금 (월 = 논평 ① · 수 = 블로그 기반 · 금 = 논평 ②, 날짜는 사이드카 publish_on)
@@ -22,6 +23,10 @@ on:
         type: choice
         default: auto
         options: [auto, threads, instagram, newsletter]
+      once:
+        description: "cron-job.org 이중 예약용 — 12h 안에 앞선 예약 실행이 있으면 건너뜀(once.yml). 손으로 돌릴 땐 끈다"
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -31,7 +36,16 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # 같은 회차를 cron-job.org(제시각)와 schedule(늦게)이 둘 다 부른다 — 먼저 온 쪽만 돈다
+  once:
+    uses: ./.github/workflows/once.yml
+    permissions:
+      actions: read
+    with:
+      once: ${{ inputs.once || false }}
   publish:
+    needs: once
+    if: needs.once.outputs.run == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

@@ -1,0 +1,52 @@
+name: once
+
+# 이중 예약의 멱등 가드 (2026-10-29). GitHub schedule 은 이 저장소에서 3~6시간 늦게 뜬다 →
+# cron-job.org 가 제시각에 workflow_dispatch(inputs.once=true)를 부르고, 늦게 오는 schedule 은 여기서 멈춘다.
+#   예약 실행(schedule · once=true) 이고, 같은 워크플로의 **앞 번호** 예약 실행이 12시간 안에 있으면 run=false.
+#   앞 실행이 실패했어도 멈춘다(cancelled 만 빼고) — 발행이 두 번 나가느니 안 나가는 게 낫다. 실패는 그쪽이 알린다.
+#   손으로 돌린 dispatch(once 없음)는 막지도 세지도 않는다 — dry_run 시험이 진짜 실행을 막으면 안 된다.
+#   예약인지는 run-name 머리말 「예약」으로 가른다(부르는 쪽이 run-name 을 그렇게 짓는다).
+#
+# cron-job.org 가 부르는 것 — 워크플로 파일명·입력을 바꾸면 cron-job.org 작업도 같이 고친다:
+#   publish-queue.yml 월·수·목·금 09:00 KST · slot-notify.yml 일 20:00 KST — body {"ref":"main","inputs":{"once":"true"}}
+#   hold-timer.yml 매일 21:00 KST — body {"ref":"main"}. 가드 없이도 멱등이다(보류 라벨 있으면 건너뜀 · 닫힌 PR 은 목록에 없음)
+#   빼 둔 것: auto-post(가드 없음 — 두 번 돌면 원고 PR·Claude 호출이 둘. 결정은 일 20:00 슬롯이라 지연이 무해) ·
+#   weekly-newsletter(두 번 돌면 브랜치 충돌로 실패 알림. 슬롯까지 9h 여유) · daily-digest · refresh-*-token(시각 무관)
+# ponytail: 창 12h — 지연이 12h 를 넘거나 같은 워크플로가 12h 안에 두 번 예약되면 창을 줄인다.
+on:
+  workflow_call:
+    inputs:
+      once:
+        type: boolean
+        default: false
+    outputs:
+      run:
+        value: ${{ jobs.check.outputs.run }}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      run: ${{ steps.g.outputs.run }}
+    steps:
+      - id: g
+        env:
+          GH_TOKEN: ${{ github.token }}
+          R: ${{ github.repository }}
+          RUN_ID: ${{ github.run_id }}
+          N: ${{ github.run_number }}
+          SCHEDULED: ${{ github.event_name == 'schedule' || inputs.once }}
+        run: |
+          set -euo pipefail
+          if [ "$SCHEDULED" != true ]; then echo "run=true" >> "$GITHUB_OUTPUT"; echo "손 실행 — 가드 없음"; exit 0; fi
+          WF=$(gh api "repos/$R/actions/runs/$RUN_ID" --jq .workflow_id)
+          SINCE=$(date -u -d '-12 hours' +%FT%TZ)
+          PREV=$(gh api "repos/$R/actions/workflows/$WF/runs?created=>=$SINCE&per_page=50" --jq \
+            "[.workflow_runs[] | select(.run_number < $N and (.display_title | startswith(\"예약\")) and .conclusion != \"cancelled\")
+              | \"#\(.run_number) \(.event) \(.status) \(.conclusion // \"-\")\"] | join(\", \")")
+          if [ -n "$PREV" ]; then
+            echo "run=false" >> "$GITHUB_OUTPUT"; echo "12h 안에 앞선 예약 실행이 있다 — 건너뜀: $PREV"
+          else
+            echo "run=true" >> "$GITHUB_OUTPUT"; echo "첫 예약 실행"
+          fi

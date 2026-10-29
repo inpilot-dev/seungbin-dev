@@ -1,0 +1,55 @@
+name: refresh-ig-token
+
+# Instagram 장기 토큰도 60일 만료다 — refresh-threads-token.yml 과 같은 방식으로 주 1회 갱신해 Secret 에 되쓴다.
+# 토큰 종류 = Instagram API with Instagram Login(graph.instagram.com — scripts/publish_instagram.py 의 API).
+#   갱신 = GET graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token (docs/research/instagram-carousel-2026-09.md §4)
+#   조건: 발급 24h 이상 · 미만료 · instagram_business_basic. 만료되면 갱신이 안 된다 → 사람이 다시 로그인.
+# 도는 시각은 **화요일 04:30 KST** — Threads 갱신(04:00) 30분 뒤.
+#
+# ⚠️ 공개 저장소다. 새 토큰은 ::add-mask:: 로 가리고 gh secret set 으로만 흐른다 — echo 하지 마라.
+# ⚠️ GITHUB_TOKEN 으로는 Secret 을 못 쓴다 — GH_PAT(이 저장소 secrets 쓰기)가 필요하다.
+on:
+  schedule:
+    - cron: "30 19 * * 1" # 월 19:30 UTC = 화 04:30 KST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7 # 실패 알림 액션(./.github/actions/telegram → scripts/notify.py)
+      - name: Refresh and store
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          GH_TOKEN: ${{ secrets.GH_PAT }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ -z "${IG_ACCESS_TOKEN:-}" ]; then echo "IG_ACCESS_TOKEN 없음 — 건너뜀"; exit 0; fi
+          # -sf: 실패해도 본문·URL(토큰 포함)을 안 찍는다
+          RESP=$(curl -sf "https://graph.instagram.com/refresh_access_token?grant_type=ig_refresh_token&access_token=$IG_ACCESS_TOKEN") \
+            || { echo "::error::갱신 요청 실패 — 만료됐거나 발급 24h 전이다"; exit 1; }
+          NEW=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+          echo "::add-mask::$NEW"
+          EXP=$(echo "$RESP" | python3 -c 'import json,sys; print(json.load(sys.stdin)["expires_in"]//86400)')
+          echo "갱신됨 — ${EXP}일 유효"
+          if [ -z "${GH_TOKEN:-}" ]; then
+            echo "::error::GH_PAT 없음 — 새 토큰을 Secret 에 못 쓴다. 수동으로 IG_ACCESS_TOKEN 갱신 필요"; exit 1
+          fi
+          gh secret set IG_ACCESS_TOKEN --repo "$REPO" --body "$NEW"
+      - name: 알림 (실패)
+        if: failure()
+        uses: ./.github/actions/telegram
+        with:
+          token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          chat: ${{ secrets.TELEGRAM_CHAT_ID }}
+          webhook: ${{ secrets.DISCORD_WEBHOOK_URL }}
+          channel: ${{ vars.NOTIFY_CHANNEL }}
+          text: |
+            [인스타 토큰 갱신 실패] 60일 안에 못 고치면 목요일 인스타 게시가 멈춘다
+            실행 기록:
+            ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
