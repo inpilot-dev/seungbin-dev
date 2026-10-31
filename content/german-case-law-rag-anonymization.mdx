@@ -1,0 +1,82 @@
+---
+topic: "독일 판례용 RAG 구조와, 형법 §203에 따른 의뢰인 데이터 로컬 익명화 방법을 다룸"
+sources: ["https://dev.to/legaltech_de/rag-architekturen-fur-deutsche-rechtsprechung-lokale-mandatsdaten-anonymisierung-ss-203-stgb-4l67"]
+slug: "german-case-law-rag-anonymization"
+title: "의뢰인 이름을 API로 보내지 않는다 — 독일 판례 RAG와 §203 로컬 익명화"
+description: "판례 RAG는 모델 성능보다 경계에서 무너진다. 호출 전에 로컬에서 가명화하고, 문서는 Randnummer 단위로 자르고, 출력의 사건번호는 검색 결과와 대조한 것만 통과시켜야 한다."
+date: "2026-10-31"
+category: "Build"
+tags: ["판례", "익명화", "가명화", "법률자동화"]
+---
+
+LLM에 독일 판례 질의를 붙이면 두 군데서 막힌다. 모델은 BGH나 OLG의 사건번호(Aktenzeichen)를 지어낸다. 그리고 의뢰인 이름이 그대로 외부 API로 나간다.
+
+둘 다 모델 문제가 아니라 **경계 문제**다. 나는 프롬프트를 다듬는 대신 호출 앞과 뒤에 결정적(deterministic) 코드를 하나씩 두는 쪽으로 갔다.
+
+## 익명화는 호출 전에 로컬에서 끝낸다
+
+규칙은 출처에 명시돼 있다.
+
+> "Mandatsbezogene Sachverhalte dürfen niemals ungeschützt an externe US-Cloud-APIs übertragen werden"
+
+— https://dev.to/legaltech_de/rag-architekturen-fur-deutsche-rechtsprechung-lokale-mandatsdaten-anonymisierung-ss-203-stgb-4l67
+
+의뢰 사건 관련 사실관계는 보호 조치 없이 미국 클라우드 API로 보내면 안 된다는 뜻이다. 그래서 이름, IBAN, 이메일, 검찰 사건번호를 `[PERSON_1]`, `[IBAN_1]` 같은 토큰으로 바꾼 뒤에 보낸다.
+
+```python
+from dataclasses import dataclass, field
+
+@dataclass
+class Vault:
+    """매핑표는 로컬 메모리에만 둔다. 디스크와 로그에는 안 쓴다"""
+    entity_to_token: dict[str, str] = field(default_factory=dict)
+    token_to_entity: dict[str, str] = field(default_factory=dict)
+    counters: dict[str, int] = field(default_factory=dict)
+
+    def register(self, raw: str, category: str) -> str:
+        norm = raw.strip()
+        if norm in self.entity_to_token:  # 맞음: 같은 사람은 같은 토큰
+            return self.entity_to_token[norm]
+        self.counters[category] = self.counters.get(category, 0) + 1
+        token = f"[{category}_{self.counters[category]}]"
+        self.entity_to_token[norm] = token
+        self.token_to_entity[token] = norm
+        return token
+```
+
+여기서 핵심은 가리기가 아니라 **참조 일관성**이다. 같은 인물이 3쪽에서는 대표이사로, 18쪽에서는 계좌주로 나와도 두 곳 모두 `[PERSON_1]`이어야 한다. 토큰이 갈라지면 모델이 인과관계를 놓친다.
+
+다만 출처 코드는 카테고리별 카운터를 미리 고정해 둔다. 나는 `counters.get(...)`으로 바꿔 카테고리를 추가할 때 고칠 곳을 하나로 줄였다. 필드명도 `entity_to_token`으로 통일했다.
+
+## 청킹은 토큰 길이가 아니라 Randnummer로 자른다
+
+| 방식 | 결과 |
+|---|---|
+| 고정 길이 (예: 500토큰) | 요건과 예외 조항("Dies gilt nicht, wenn…")이 서로 다른 청크로 갈라진다 |
+| Randnummer(Rn.) 단위 | 청크 하나가 인용 단위 하나와 맞아떨어진다 |
+
+내 기준은 이렇다. **청크 ID가 곧 인용 문자열이어야 한다.** 각 청크에 `court`, `file_number`, `randnummer`를 붙여 두면, 검색된 청크 목록이 그대로 "이번 세션에서 인용해도 되는 출처 목록"이 된다.
+
+## 인용은 검색된 것만 통과시킨다
+
+```python
+import re
+
+# 틀림: [I|V|X]+  — 문자 클래스 안의 | 는 OR가 아니라 문자 그대로다
+CITATION = re.compile(r"\b(?:\d+\s+StR\s+\d+/\d{2,4}|[IVX]+\s+ZR\s+\d+/\d{2,4})\b")
+
+def unverified(generated: str, retrieved: set[str]) -> list[str]:
+    found = {m.group(0).strip() for m in CITATION.finditer(generated)}
+    return [c for c in found if c not in retrieved]  # 비어 있지 않으면 출력 차단
+```
+
+출처 정규식에는 `[I|V|X]+`가 들어 있다. 나는 `[IVX]+`로 고쳤다. 검출 실패는 넘어가지만, 오탐은 변호사가 매번 손으로 확인해야 한다.
+
+## 안 한 것
+
+- **NER 모델은 안 썼다.** 이름 목록과 정규식만 쓴다. 그래서 목록에 없는 표기나 격변화된 이름은 못 잡는다. 이 구멍은 사람이 검토해서 메운다.
+- **BM25와 벡터 검색을 섞는 하이브리드 검색**은 출처에서 권하지만 이 글에서는 다루지 않았다.
+- 검증기는 **사건번호가 검색 결과에 있는지만** 본다. 그 판례가 실제로 주장을 뒷받침하는지는 검사하지 않는다.
+- 이 글은 설계 기록이다. §203 StGB 준수 여부에 대한 법률 판단이 아니다.
+
+> 이름은 나가기 전에 로컬에서 바꾸고, 청크는 Rn. 단위로 자르고, 사건번호는 검색 결과에 있는 것만 통과시킨다.
