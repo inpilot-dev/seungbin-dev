@@ -1,0 +1,77 @@
+---
+topic: "musl 기반 리눅스에서도 독점 NVIDIA 드라이버를 쓸 수 있게 만드는 방법을 다룸"
+sources: ["https://chimera-linux.org/news/2026/11/musl-nvidia.html"]
+slug: "musl-proprietary-nvidia-driver"
+title: "ldd가 glibc 심볼을 못 찾는다 — musl에서 독점 NVIDIA 드라이버 돌리기"
+description: "stock musl로는 안 된다. GLVND, Git 최신 gcompat, patchelf로 glibc 의존을 걷어내면 남는 문제는 relocation 37(ifunc) 하나다."
+date: "2026-11-07"
+category: "Build"
+tags: ["리눅스", "그래픽드라이버", "동적링커"]
+coverCmd: "grep R_X86_64 /usr/include/elf.h|grep 37"
+coverOut: "#define R_X86_64_IRELATIVE 37"
+---
+
+musl 위에서 독점 NVIDIA 드라이버 라이브러리에 `ldd`를 걸면 `symbol not found`가 줄줄이 나온다. 드라이버가 **musl이 아니라 glibc용으로** 빌드됐기 때문이다. 이 글은 Chimera Linux가 이 문제를 어떻게 풀었는지 정리한 것이다.
+
+## FOSS 드라이버로 버틸 수 있는지는 세대가 정한다
+
+| 세대 | 독점 드라이버 | Nouveau / NVK |
+|---|---|---|
+| Maxwell 이전 | 최신 시스템에서 미지원 | 일부 지원. 관리가 부실하다 |
+| Maxwell, Pascal (GTX 700/900/1000) | 레거시 580 브랜치 | 동작은 한다. 부팅 클럭에서 못 올라가 매우 느리다 |
+| Turing 이상 (GTX 1600, RTX 2000~) | 메인 620, 레거시 580 | GSP 펌웨어로 동작한다. 성능은 독점 대비 40-80% |
+
+RTX 2000 이상은 성능을 손해 보면 FOSS로 버틴다. 그 아래 세대는 독점 드라이버가 사실상 필수다.
+
+## stock musl은 답이 아니다
+
+원문은 이렇게 못 박는다.
+
+> "Particularly, using stock musl is out of the question and will likely never work." — https://chimera-linux.org/news/2026/11/musl-nvidia.html
+
+그래서 세 겹을 쌓는다.
+
+## GLVND로 디스패치를 분리한다
+
+독점 드라이버는 GLVND를 필수로 요구한다. musl 배포판은 대체로 Mesa에 내장된 디스패치 코드를 쓴다. 전환 절차는 GLVND를 패키징하고, Mesa를 GLVND로 다시 빌드하고, `mesa-devel` 의존 패키지를 정리하는 것이다. 하이브리드 그래픽 노트북이면 iGPU는 Mesa로 남겨둘 수 있다.
+
+## gcompat은 태그 릴리스가 아니라 Git 최신본을 쓴다
+
+gcompat은 glibc 전용 심볼을 `libgcompat.so.0`로 채워주는 호환 계층이다. 최신 태그 릴리스에는 드라이버가 요구하는 심볼이 다 없다. **Git 최신 리비전에는 다 있다.**
+
+## patchelf로 DT_NEEDED를 갈아끼운다
+
+드라이버 대부분은 인터프리터가 없는 라이브러리라서 gcompat 로더가 끼어들 틈이 없다. 그래서 의존성을 ELF 안에서 직접 고친다.
+
+```bash
+# 틀림: 그대로 로드하면 glibc 심볼이 비어 있다
+$ ldd libnvidia-glcore.so.580.196.07
+Error relocating libnvidia-glcore.so.580.196.07: dlvsym: symbol not found
+Error relocating libnvidia-glcore.so.580.196.07: backtrace: symbol not found
+
+# 맞음: glibc 의존을 떼고 gcompat을 붙인다
+$ patchelf --remove-needed ld-linux-x86-64.so.2 \
+  --remove-needed libdl.so.2 --remove-needed libm.so.6 \
+  --remove-needed libpthread.so.0 --remove-needed librt.so.1 \
+  --replace-needed libc.so.6 libc.so \
+  --add-needed libgcompat.so.0 libnvidia-glcore.so.580.196.07
+```
+
+`libm.so.6` 같은 항목은 musl ldso가 예약어로 무시하니 빼지 않아도 된다. 그래도 정리해둔다. 이렇게 하면 에러가 하나만 남는다.
+
+## 남는 건 relocation 37이다
+
+```bash
+$ grep R_X86_64 /usr/include/elf.h|grep 37
+#define R_X86_64_IRELATIVE 37
+```
+
+GNU ifunc용 relocation이다. 런타임에 resolver가 구현을 고르는 방식이고, glibc는 이걸로 CPU별 `memcpy`를 고른다. musl은 이 기능을 **의도적으로** 구현하지 않았다. patchelf로는 해결되지 않는 지점이다. 내가 읽은 원문은 이 대목에서 끊겨서, 해법은 여기에 적지 않는다.
+
+## 안 한 것
+
+직접 돌려보지는 않았다. 이 글은 원문 요약이다. 원문 기준으로 PR은 580과 620 브랜치 모두 동작하지만 아직 완성은 아니고, NVIDIA가 바이너리를 제공하는 x86_64와 aarch64만 대상이다.
+
+Turing 이상 카드에서 성능 손해를 감수할 수 있으면 이 경로는 필요 없다. NVK로 충분하다. Mesa 내장 디스패치를 그대로 쓰는 musl 배포판이라면 GLVND 전환부터 해야 한다.
+
+> musl은 그대로 두지 않는다. GLVND로 디스패치를 나누고, gcompat으로 심볼을 채우고, patchelf로 의존성을 고친 뒤에도 ifunc 하나가 남는다.
